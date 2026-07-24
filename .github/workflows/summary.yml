@@ -63,36 +63,15 @@ jobs:
         run: python build_summary.py --slot ${{ steps.slot.outputs.slot }}
 
       - name: Commit and push
-        run: |
-          git config user.name "github-actions[bot]"
-          git config user.email "github-actions[bot]@users.noreply.github.com"
-          # 目錄可能不存在（skip 場次、或尚無任何產出）→ 容錯；-A 才會把
-          # 清理段刪除的 data/analyses/ 過期檔一併 stage 成刪除
-          git add -A data/summary 2>/dev/null || true
-          git add -A data/analyses 2>/dev/null || true
-          if git diff --cached --quiet; then
-            echo "no changes"
-            exit 0
-          fi
-          git commit -m "data: summary ${{ steps.slot.outputs.slot }} $(date -u +%Y-%m-%dT%H:%MZ)"
-          pushed=0
-          for i in 1 2 3 4 5; do
-            if git pull --rebase origin main && git push; then pushed=1; break; fi
-            sleep 4
-          done
-          if [ "$pushed" != "1" ]; then echo "::error::push failed after 5 retries"; exit 1; fi
+        uses: ./.github/actions/commit-data
+        with:
+          # add_all：清理段刪除的 data/analyses/ 過期檔要一併 stage 成刪除；目錄可能不存在（skip 場次）→ 容錯
+          paths: data/summary data/analyses
+          message: "data: summary ${{ steps.slot.outputs.slot }}"
+          add_all: "true"
 
-      # 失敗告警：同日同管線只開一張 issue，重複失敗改留言（避免 issue 洪水）
       - name: Notify failure
         if: failure()
-        env:
-          GH_TOKEN: ${{ github.token }}
-          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
-        run: |
-          title="pipeline 失敗：summary $(TZ=Asia/Taipei date +%F)"
-          n=$(gh issue list --state open --search "in:title \"$title\"" --json number --jq '.[0].number // empty')
-          if [ -n "$n" ]; then
-            gh issue comment "$n" --body "再次失敗：$RUN_URL"
-          else
-            gh issue create --title "$title" --body "失敗 run：$RUN_URL"
-          fi
+        uses: ./.github/actions/notify-failure
+        with:
+          pipeline: summary

@@ -29,6 +29,19 @@ _lock = threading.Lock()
 _last_request_ts = [0.0]
 
 
+def resolve_cols(j: dict, spec: dict) -> dict:
+    """依欄名關鍵字在 TWSE 回應的 fields metadata 中定位各欄 index，TWSE 調整欄位順序時
+    仍能對到正確欄；fields 缺失或找不到時退回 spec 內建的固定 index（歷史行為）。
+    spec = {name: (fallback_idx, include_keywords, exclude_keywords)}。"""
+    fields = j.get("fields") or []
+    out = {}
+    for name, (fb, inc, exc) in spec.items():
+        idx = next((i for i, f in enumerate(fields)
+                    if all(k in str(f) for k in inc) and not any(k in str(f) for k in exc)), None)
+        out[name] = idx if idx is not None else fb
+    return out
+
+
 def throttled_get(url: str, params: dict, timeout: int = 30) -> requests.Response:
     """所有 TWSE 請求都經過這裡，用全域鎖序列化＋節流，避免併發/連發觸發 IP 限流。"""
     with _lock:

@@ -11,12 +11,13 @@ from __future__ import annotations
 import datetime as dt
 import json
 import sys
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent
 sys.path.insert(0, str(ROOT / "src"))
 from fmclient import TAIPEI, api_get, token  # noqa: E402
-from twseclient import throttled_get  # noqa: E402 — TWSE 全域節流（限流教訓見該檔檔頭）
+from twseclient import resolve_cols, throttled_get  # noqa: E402 — TWSE 全域節流（限流教訓見該檔檔頭）
 
 TOP_N = 50
 MAX_BACK_DAYS = 5
@@ -80,6 +81,16 @@ def fetch_twse_lending(date: str, select_type: str) -> dict:
         except (TypeError, ValueError):
             return 0.0
 
+    # 欄位定位改吃 fields metadata（TWSE 改欄位順序不再靜默錯值），fallback＝歷史固定順序：
+    # 代號/名稱/前日餘額/當日借/當日還/當日餘額/收盤價/當日餘額市值/註記
+    cols = resolve_cols(j, {
+        "prev": (2, ("前日", "餘額"), ("市值",)),
+        "in":   (3, ("借",), ("餘額", "市值")),
+        "out":  (4, ("還",), ()),
+        "bal":  (5, ("餘額",), ("前日", "市值")),
+        "mv":   (7, ("市值",), ()),
+    })
+    max_idx = max(cols.values())
     out = {}
     for row in j.get("data") or []:
         if not row or not row[0]:
@@ -87,10 +98,13 @@ def fetch_twse_lending(date: str, select_type: str) -> dict:
         c = str(row[0]).strip()
         if not c.isascii() or not c.isalnum():
             continue  # 排除「合計」市場總計列（代號欄是中文，非真實股票代號）
-        # 欄位順序：代號/名稱/前日餘額/當日借/當日還/當日餘額/收盤價/當日餘額市值/註記
+        if len(row) <= max_idx:
+            print(f"  ⚠ TWSE {select_type} 列 {c} 欄位數不足（{len(row)}），略過", flush=True)
+            continue
         # 原始單位：股／元，統一轉張／千元，跟其餘 dataset 的單位一致
-        out[c] = {"prev": num(row[2]) / 1000, "in": num(row[3]) / 1000, "out": num(row[4]) / 1000,
-                  "bal": num(row[5]) / 1000, "mv": num(row[7]) / 1000}
+        out[c] = {"prev": num(row[cols["prev"]]) / 1000, "in": num(row[cols["in"]]) / 1000,
+                  "out": num(row[cols["out"]]) / 1000,
+                  "bal": num(row[cols["bal"]]) / 1000, "mv": num(row[cols["mv"]]) / 1000}
     return out
 
 
@@ -186,6 +200,37 @@ def build_margin(date: str, rows: list, nm: dict) -> dict:
     return {"date": date, "increase": inc, "decrease": dec, "usage": usage}
 
 
+def _agg_lend_deals(lend_rows: list) -> dict:
+    """借券成交明細（逐筆）→ 依股票彙總當日成交量/筆數/最高費率。"""
+    out: dict[str, dict] = {}
+    for r in lend_rows:
+        c = r.get("stock_id", "")
+        o = out.setdefault(c, {"vol": 0, "deals": 0, "fee_max": None})
+        o["vol"] += r.get("volume") or 0
+        o["deals"] += 1
+        fr = r.get("fee_rate")
+        if fr is not None and (o["fee_max"] is None or fr > o["fee_max"]):
+            o["fee_max"] = fr
+    return out
+
+
+def _agg_inst_net(inst_rows: list) -> dict:
+    """三大法人買賣超：dataset 給股數，依身分別彙總淨買賣股數（外資含外資自營）。"""
+    out: dict[str, dict] = {}
+    for r in inst_rows:
+        c = r.get("stock_id", "")
+        o = out.setdefault(c, {"foreign": 0, "trust": 0, "dealer": 0})
+        net = (r.get("buy") or 0) - (r.get("sell") or 0)
+        name = r.get("name")
+        if name in ("Foreign_Investor", "Foreign_Dealer_Self"):
+            o["foreign"] += net
+        elif name == "Investment_Trust":
+            o["trust"] += net
+        elif name in ("Dealer_self", "Dealer_Hedging", "Dealer"):
+            o["dealer"] += net
+    return out
+
+
 def build_lending(date: str, lend_rows: list, margin_rows: list, short_rows: list,
                    dt_rows: list, dt_date: str, price_rows: list, inst_rows: list,
                    hold_rows: list, nm: dict) -> dict:
@@ -200,35 +245,11 @@ def build_lending(date: str, lend_rows: list, margin_rows: list, short_rows: lis
     sys_bal = fetch_twse_lending(date, "SLB") if date else {}
     otc_bal = fetch_twse_lending(date, "NLB") if date else {}
 
-    # 借券成交明細（逐筆）→ 依股票彙總當日成交量/筆數/最高費率
-    lend_agg: dict[str, dict] = {}
-    for r in lend_rows:
-        c = r.get("stock_id", "")
-        o = lend_agg.setdefault(c, {"vol": 0, "deals": 0, "fee_max": None})
-        o["vol"] += r.get("volume") or 0
-        o["deals"] += 1
-        fr = r.get("fee_rate")
-        if fr is not None and (o["fee_max"] is None or fr > o["fee_max"]):
-            o["fee_max"] = fr
-
+    lend_agg = _agg_lend_deals(lend_rows)
+    inst_by_c = _agg_inst_net(inst_rows)
     # 融資融券（融資買賣餘額 + 融券放空、券商營業處所借券賣出SBL流量+餘額都在同一個dataset）
     margin_by_c = {r.get("stock_id"): r for r in margin_rows}
     short_by_c = {r.get("stock_id"): r for r in short_rows}
-
-    # 三大法人買賣超金額：dataset給股數，乘收盤價換算成金額（千元）
-    inst_by_c: dict[str, dict] = {}
-    for r in inst_rows:
-        c = r.get("stock_id", "")
-        o = inst_by_c.setdefault(c, {"foreign": 0, "trust": 0, "dealer": 0})
-        net = (r.get("buy") or 0) - (r.get("sell") or 0)
-        name = r.get("name")
-        if name in ("Foreign_Investor", "Foreign_Dealer_Self"):
-            o["foreign"] += net
-        elif name == "Investment_Trust":
-            o["trust"] += net
-        elif name in ("Dealer_self", "Dealer_Hedging", "Dealer"):
-            o["dealer"] += net
-
     hold_by_c = {r.get("stock_id"): r for r in hold_rows}
 
     codes = set(sys_bal) | set(otc_bal) | set(lend_agg) | set(margin_by_c) | set(short_by_c)
@@ -349,14 +370,15 @@ def daytrading_broker_estimate(date: str, codes: list, close_map: dict, top_k: i
     分點當沖貢獻度估算法，非逐筆交易的直接證據（可能是不同客戶各自
     單向交易剛好量相近）。每檔一次API call，逐檔失敗不影響其他檔。
     金額（千元）以當日收盤價估算張數對應金額，非分點實際成交均價
-    （該dataset沒有逐價位對應的分點均價可用）。"""
-    out = {}
-    for c in codes:
+    （該dataset沒有逐價位對應的分點均價可用）。
+    50 檔逐檔查詢是本管線主要耗時來源，用 3 併發輕度並行（FinMind 額度內；
+    非 TWSE 端點、不涉 IP 限流教訓，且 fmclient 已有 402/429 退避）。"""
+    def one(c: str):
         try:
             rows = api_get("TaiwanStockTradingDailyReport", data_id=c, start_date=date, end_date=date)
         except Exception as e:
             print(f"  分點資料抓取失敗 {c}：{e}", flush=True)
-            continue
+            return c, None
         agg: dict[str, list] = {}
         for r in rows:
             t = r.get("securities_trader")
@@ -370,7 +392,13 @@ def daytrading_broker_estimate(date: str, codes: list, close_map: dict, top_k: i
                 "money": round(min(b, s) / 1000 * px) if px else None}
                for t, (b, s) in agg.items() if min(b, s) > 0]
         est.sort(key=lambda x: -(x["money"] or 0))
-        out[c] = est[:top_k]
+        return c, est[:top_k]
+
+    out = {}
+    with ThreadPoolExecutor(max_workers=3) as ex:
+        for c, est in ex.map(one, codes):
+            if est is not None:
+                out[c] = est
     return out
 
 
@@ -493,8 +521,10 @@ def main() -> None:
     # 借券tab整合多個dataset，用短餘額表的日期當TWSE兩平台查詢基準（核心資料，
     # 各dataset正常應同一交易日；若當天TaiwanDailyShortSaleBalances缺，退用最新日期）。
     lend_date = d_short or latest
-    # r_price（daytrading用）可能是不同日期，借券tab的金額換算要用同一天收盤價，另抓一次
-    r_price_lend = api_get("TaiwanStockPrice", start_date=lend_date, end_date=lend_date) if lend_date else []
+    # r_price（daytrading用）可能是不同日期，借券tab的金額換算要用同一天收盤價；
+    # 日期相同（常態）直接重用，省一次全市場查詢
+    r_price_lend = (r_price if lend_date == d_dt
+                    else api_get("TaiwanStockPrice", start_date=lend_date, end_date=lend_date)) if lend_date else []
     # 借券tab混合多個dataset，若日期沒對齊會把不同天的資料錯配在同一列——只記警告不中斷，
     # 因為單日落後在同一批交易日內通常仍可用（比完全不出資料好），但要能被發現排查。
     mismatch = [{"name": n, "date": d} for n, d in (

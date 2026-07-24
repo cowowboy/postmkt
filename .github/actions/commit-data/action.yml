@@ -1,0 +1,38 @@
+name: commit-data
+description: 提交產出資料（無變更早退＋rebase/push 重試 5 次）；四支資料 workflow 共用，改重試邏輯只需改這裡
+
+inputs:
+  paths:
+    description: 要 git add 的路徑（空白分隔）
+    required: true
+  message:
+    description: commit 訊息前綴（會自動附上 UTC 時間戳）
+    required: true
+  add_all:
+    description: '"true" 時逐路徑用 git add -A（把清理段的刪除一併 stage；目錄可能不存在，容錯）'
+    required: false
+    default: "false"
+
+runs:
+  using: composite
+  steps:
+    - shell: bash
+      run: |
+        git config user.name "github-actions[bot]"
+        git config user.email "github-actions[bot]@users.noreply.github.com"
+        if [ "${{ inputs.add_all }}" = "true" ]; then
+          for p in ${{ inputs.paths }}; do git add -A "$p" 2>/dev/null || true; done
+        else
+          git add ${{ inputs.paths }}
+        fi
+        if git diff --cached --quiet; then
+          echo "no changes"
+          exit 0
+        fi
+        git commit -m "${{ inputs.message }} $(date -u +%Y-%m-%dT%H:%MZ)"
+        pushed=0
+        for i in 1 2 3 4 5; do
+          if git pull --rebase origin main && git push; then pushed=1; break; fi
+          sleep 4
+        done
+        if [ "$pushed" != "1" ]; then echo "::error::push failed after 5 retries"; exit 1; fi

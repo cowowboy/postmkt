@@ -94,3 +94,30 @@ def test_rev_metrics_latest_none_falls_back():
 def test_rev_metrics_empty():
     assert bd.rev_metrics([], []) is None
     assert bd.rev_metrics(_months(3), [None, None, None]) is None
+
+
+# ---------- _next_exdiv（同日現金+股票合併需與輸入順序無關，2026-07-24 改寫） ----------
+
+def test_next_exdiv_basic():
+    rows = [{"CashExDividendTradingDate": "2026-08-01"}]
+    assert bd._next_exdiv(rows, "2026-07-24") == ("2026-08-01", "現金")
+
+
+def test_next_exdiv_past_dates_ignored():
+    rows = [{"CashExDividendTradingDate": "2026-07-01"}]
+    assert bd._next_exdiv(rows, "2026-07-24") == (None, None)
+
+
+def test_next_exdiv_same_day_merge_any_order():
+    import itertools
+    base = [{"CashExDividendTradingDate": "2026-08-01"},
+            {"StockExDividendTradingDate": "2026-08-01"},
+            {"CashExDividendTradingDate": "2026-09-01"}]
+    for perm in itertools.permutations(base):
+        assert bd._next_exdiv(list(perm), "2026-07-24") == ("2026-08-01", "現金+股票"), perm
+
+
+def test_next_exdiv_picks_earliest():
+    rows = [{"StockExDividendTradingDate": "2026-09-01"},
+            {"CashExDividendTradingDate": "2026-08-15"}]
+    assert bd._next_exdiv(rows, "2026-07-24") == ("2026-08-15", "現金")

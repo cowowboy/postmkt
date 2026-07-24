@@ -88,3 +88,30 @@ def test_daytrading_no_by_ratio_and_metrics():
     assert r["chg_pct"] == 2.0            # spread 2 / 前收 100
     assert r["amp_pct"] == 4.0            # (103-99)/100
     assert "traders" not in r             # date="" 跳過分點推估
+
+
+# ---------- twseclient.resolve_cols：fields metadata 欄位定位＋固定索引後備 ----------
+
+def test_resolve_cols_by_field_names():
+    from twseclient import resolve_cols
+    j = {"fields": ["股票代號", "股票名稱", "前日餘額", "本日借券", "本日還券", "本日餘額", "收盤價", "本日餘額市值", "備註"]}
+    cols = resolve_cols(j, {
+        "prev": (99, ("前日", "餘額"), ("市值",)),
+        "bal":  (99, ("餘額",), ("前日", "市值")),
+        "mv":   (99, ("市值",), ()),
+    })
+    assert cols == {"prev": 2, "bal": 5, "mv": 7}
+
+
+def test_resolve_cols_reordered_fields_still_found():
+    from twseclient import resolve_cols
+    # TWSE 若調整欄位順序，仍應對到正確欄而非靜默錯值
+    j = {"fields": ["股票代號", "股票名稱", "本日餘額市值", "本日餘額", "前日餘額"]}
+    cols = resolve_cols(j, {"bal": (5, ("餘額",), ("前日", "市值")), "mv": (7, ("市值",), ())})
+    assert cols == {"bal": 3, "mv": 2}
+
+
+def test_resolve_cols_missing_fields_fallback():
+    from twseclient import resolve_cols
+    cols = resolve_cols({}, {"bal": (5, ("餘額",), ()), "mv": (7, ("市值",), ())})
+    assert cols == {"bal": 5, "mv": 7}

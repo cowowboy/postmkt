@@ -95,6 +95,7 @@ UNRESTRICTED_GROUP_TITLE = "證券商不限用途款項借貸"
 # TWSE 節流＋指數退避重試：節流鎖 2026-07-24 抽到 twseclient.py（與 build_postmkt 共用），
 # 退避迴圈仍在本檔各 fetcher（遇限流/空回應依 TWSE_RETRY_BACKOFFS 重試而非只一次）。
 from twseclient import RETRY_BACKOFFS as TWSE_RETRY_BACKOFFS  # noqa: E402
+from twseclient import resolve_cols  # noqa: E402
 from twseclient import throttled_get as _twse_throttled_get  # noqa: E402
 
 
@@ -157,10 +158,17 @@ def _fetch_twt72u_total(date_iso: str, select_type: str) -> tuple[int, int] | No
             j = r.json()
             if j.get("stat") != "OK":
                 return None  # 非交易日/無資料（正常回應，非限流，不重試）
+            # 欄位定位吃 fields metadata（TWSE 改欄位順序不再靜默錯值），fallback＝固定 5/7
+            cols = resolve_cols(j, {
+                "bal": (5, ("餘額",), ("前日", "市值")),
+                "mv":  (7, ("市值",), ()),
+            })
             for row in j.get("data") or []:
                 if row and row[0] == "合計" and row[-1] == "整體市場":
-                    shares = parse_num(row[5])
-                    value = parse_num(row[7])
+                    if len(row) <= max(cols.values()):
+                        return None
+                    shares = parse_num(row[cols["bal"]])
+                    value = parse_num(row[cols["mv"]])
                     if shares is None or value is None:
                         return None
                     return shares, value

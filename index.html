@@ -3,6 +3,11 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
+<!-- 縱深防禦（2026-07-24）：全站以 esc() 拼 innerHTML、esc 是唯一 XSS 防線，CSP 作第二道——
+     即使某處漏 escape 被注入，connect-src 白名單也擋住把 localStorage 三把金鑰
+     （anthropic_key/fm_token/gh_token）外送到白名單以外網域的路徑。
+     新增資料源端點時需同步這份白名單，否則該 fetch 會被瀏覽器直接擋下。 -->
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; object-src 'none'; base-uri 'none'; connect-src 'self' https://api.anthropic.com https://api.finmindtrade.com https://raw.githubusercontent.com https://api.github.com https://taiwan-flow-v2.shihpc.workers.dev">
 <title>盤後分析 · 股市雷達</title>
 <style>
   :root{
@@ -251,8 +256,12 @@ const esc = s => String(s==null?"":s).replace(/[&<>"']/g,
   c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
 const sgn = (v,t) => `<span class="${v>0?"up":v<0?"down":"mut"}">${t}</span>`;
 const num = v => v==null ? "—" : Math.round(v).toLocaleString("en-US");
-const zh = v => v==null ? '<span class="mut">—</span>' : sgn(v,(v>0?"+":"")+Math.round(v).toLocaleString("en-US")+"張");
-const yi = v => v==null ? '<span class="mut">—</span>' : sgn(v,(v>0?"+":"")+(v/1e8).toFixed(2)+"億");
+// zh/yi 的正負號與顏色依「顯示捨入後」的值判定：原值非 0 但捨入到 0 時顯示灰色 0，
+// 不再出現紅色「+0張／+0.00億」的視覺誤導（||0 同時把 -0 正規化成 0）
+const zh = v => { if (v==null) return '<span class="mut">—</span>'; const r = Math.round(v)||0; return sgn(r,(r>0?"+":"")+r.toLocaleString("en-US")+"張"); };
+const yi = v => { if (v==null) return '<span class="mut">—</span>'; const r = +(v/1e8).toFixed(2)||0; return sgn(r,(r>0?"+":"")+r.toFixed(2)+"億"); };
+// Claude API usage 的輸入 token 合計（quota 三欄位加總；5 處顯示共用）
+const inTok = u => (u.input_tokens||0)+(u.cache_read_input_tokens||0)+(u.cache_creation_input_tokens||0);
 const yiAbs = v => v==null ? "—" : (v/1e8).toFixed(2)+"億";
 const nameCell = r => `<span class="code">${esc(r.c)}</span><span class="nm">${esc(r.n||"")}</span>`;
 const cleanSub = s => String(s||"").replace(/^.*?·/,"");
@@ -389,10 +398,12 @@ document.addEventListener("scroll", e => {
 }, true);
 // 保險：scroll事件理論上該即時觸發，但實測某些情境(分頁不在前景/隱藏文件)
 // 完全不會派送。定期輪詢當作backup，代價很小(只是比對winStart，真的變動才
-// 重繪)，確保就算scroll事件失靈，捲動視窗最慢200ms內還是會跟上。
+// 重繪)，確保就算scroll事件失靈，捲動視窗最慢300ms內還是會跟上(虛擬捲動有
+// buffer 列，300ms 視覺上無感；背景分頁直接跳過)。
 setInterval(() => {
+  if (document.hidden) return;  // 背景分頁：使用者看不到、rAF 也不跑，省電跳過
   document.querySelectorAll(".tblbox").forEach(tblVirtualSync);
-}, 200);
+}, 300);
 document.addEventListener("click", e => {
   const th = e.target.closest("th[data-i]");
   if (!th) return;
@@ -872,6 +883,15 @@ function bkResultTableHtml(res){
   h += `<div class="mut" style="font-size:.74rem;margin:2px 4px 8px">金額＝Σ(各價位成交價×股數)，單位百萬元（1位小數）；張數＝股數/1000四捨五入（零股會顯示為0張但金額仍計入）。</div>`;
   return h;
 }
+// FinMind TradingDailyReport 專屬 endpoint 共用查詢（分點 tab 與摘要指定分點段共用），
+// 回傳原始明細列（分點×股票×價位，buy/sell 單位=股）；非 200 擲錯由呼叫端決定吞或顯示
+async function fetchTDR(params){
+  const p = new URLSearchParams({ dataset:"TaiwanStockTradingDailyReport", token: fmToken(), ...params });
+  const r = await fetch("https://api.finmindtrade.com/api/v4/taiwan_stock_trading_daily_report?"+p.toString());
+  const j = await r.json();
+  if (!r.ok || (j.status && j.status !== 200)) throw new Error(j.msg || ("HTTP "+r.status));
+  return j.data || [];
+}
 async function bkQuery(kind){
   const inp = document.getElementById("bkQ_"+kind);
   const id = (inp ? inp.value : "").trim();
@@ -879,14 +899,13 @@ async function bkQuery(kind){
   if (!fmToken()){ alert("請先輸入並儲存 FinMind token"); return; }
   const bk = (state.pm && state.pm.brokers) || {};
   const date = bk.date || "";
+  if (!date){  // 盤後資料未載入時 date 為空，送 FinMind 只會回難懂的錯誤——先擋並給明確提示
+    BK_RES[kind] = { kind, id, date, error:"盤後資料尚未載入完成（查詢日取自 postmkt.json），請稍候再查", rows:[], totals:null };
+    render(); return;
+  }
   BK_LOADING = kind; render();
   try{
-    const p = new URLSearchParams({ dataset:"TaiwanStockTradingDailyReport", date, token: fmToken() });
-    p.set(kind==="stock" ? "data_id" : "securities_trader_id", id);
-    const r = await fetch("https://api.finmindtrade.com/api/v4/taiwan_stock_trading_daily_report?"+p.toString());
-    const j = await r.json();
-    if (!r.ok || (j.status && j.status !== 200)) throw new Error(j.msg || ("HTTP "+r.status));
-    const raw = j.data || [];
+    const raw = await fetchTDR({ date, [kind==="stock" ? "data_id" : "securities_trader_id"]: id });
     // 原始為 分點×股票×價位 明細（buy/sell單位=股），聚合成每列一個對象：
     // 單點查詢→依股票聚合；個股查詢→依分點聚合。金額=Σ(價×股數)，元。
     const agg = new Map();
@@ -994,6 +1013,17 @@ function renderStats(){
     const l = state.aetf && state.aetf.latest;
     el.innerHTML = l ? `<div class="stat"><b>${Object.keys(l.etfs||{}).length}</b>檔 ETF</div>`
       + `<div class="stat">快照 ${esc(l.run_date||"—")}</div>` : "";
+  } else if (state.tab === "mktbal"){
+    // 有自己資料日的 tab 不借用 postmkt 的資料日（避免與頁內 intro 的日期不同源誤讀）
+    const d = state.mktbal;
+    el.innerHTML = d ? `<div class="stat">資料日 <b>${esc(d.latest_date||"—")}</b></div>`
+      + `<div class="stat">更新 ${esc(fmtGenTaipei(d.generated_at))}（台灣）</div>` : "";
+  } else if (state.tab === "diag"){
+    const dg = state.diag;
+    el.innerHTML = dg ? `<div class="stat">素材庫資料日 <b>${esc(dg.date||"—")}</b></div>`
+      + `<div class="stat"><b>${dg.n||0}</b> 檔</div>` : "";
+  } else if (state.tab === "dates"){
+    el.innerHTML = "";  // 本 tab 本身就是各源日期總覽，不重複顯示單一資料日
   } else {
     const d = state.pm;
     if (!d){ el.innerHTML = ""; return; }
@@ -1098,7 +1128,13 @@ function renderDates(){
     + `各資料源目前的<b style="color:var(--txt)">資料日</b>與<b style="color:var(--txt)">產出時間</b>，用以判斷哪些已是最新交易日、哪些尚未更新。`
     + `資料為排程產出，<b style="color:var(--txt)">當日盤後資料通常於當晚 21:00 後才更新</b>，故白天多半看到的是前一交易日。`
     + `「即時類股」為盤中即時、「隔夜美股」屬不同市場、「新聞」含當日，狀態欄另作標註以免誤判落後。</div>`;
-  const dd = state.datesData;
+  let dd = state.datesData;
+  // 快取失效條件：本站列曾在 postmkt.json 載入完成前讀取失敗（local() 擲錯）——
+  // pm 就緒後自動重抓，否則該列整個 session 恆顯「讀取失敗」且基準日退用跨站源
+  if (dd && !state.datesLoading){
+    const pmRow = dd.rows.find(r => r.base);
+    if (pmRow && pmRow.err && state.pm) dd = state.datesData = null;
+  }
   if (!dd){
     if (!state.datesLoading) fetchDates();
     main.innerHTML = intro + `<div class="empty">載入各資料源日期中…</div>`;
@@ -1113,9 +1149,12 @@ function renderDates(){
   const table = `<div class="tblbox"><table class="mtable dtbl"><thead><tr>`
     + `<th>資料源</th><th>資料日</th><th>產出時間(台北)</th><th>狀態</th></tr></thead>`
     + `<tbody>${body}</tbody></table></div>`;
-  main.innerHTML = intro + sec("各資料源日期", `基準交易日 ${esc(dd.baseline || "—")} · 綠＝最新／琥珀＝落後 · 時間均為台北時間`) + table;
+  const refresh = `<div style="text-align:right;margin:2px 4px"><span class="clk" data-datesrefresh style="font-size:.78rem">↻ 重新整理（本頁為進入時快照）</span></div>`;
+  main.innerHTML = intro + sec("各資料源日期", `基準交易日 ${esc(dd.baseline || "—")} · 綠＝最新／琥珀＝落後（僅排除週末，國定假日不扣） · 時間均為台北時間`) + refresh + table;
 }
 document.addEventListener("click", e=>{
+  const el0 = e.target.closest("[data-datesrefresh]");
+  if (el0){ state.datesData = null; render(); return; }  // 清快取→renderDates 觸發 fetchDates
   const el1 = e.target.closest(".clk[data-etf]");
   if (el1){ state.openEtf = state.openEtf===el1.dataset.etf ? null : el1.dataset.etf; render();
     if (state.openEtf){ const x=document.getElementById("etfdd"); if(x)x.scrollIntoView({behavior:"smooth",block:"start"}); } return; }
@@ -1213,7 +1252,7 @@ function renderMktbal(){
   main.innerHTML = pillsHtml + intro
     + sec("近5日", esc(pill.label))
     + dailyTable
-    + sec("近3年各月底", "年列可展開／收合月列 · YoY／MoM 紅漲綠跌")
+    + sec("近3年各月底", "年列可展開／收合月列 · YoY／MoM 紅漲綠跌 · 年列 YoY 為年末值對年末值的近似比較（非交易日對齊）")
     + monthlyTable;
 }
 
@@ -1448,10 +1487,8 @@ async function insightFetchBrokers(primary){
   const out = [];
   for (const id of INSIGHT_BROKERS){
     try{
-      const p = new URLSearchParams({ dataset:"TaiwanStockTradingDailyReport", date, securities_trader_id:id, token: fmToken() });
-      const r = await fetch("https://api.finmindtrade.com/api/v4/taiwan_stock_trading_daily_report?"+p.toString());
-      const j = await r.json();
-      const raw = (r.ok && (!j.status || j.status===200)) ? (j.data||[]) : [];
+      // 查詢失敗吞成空列（該分點段顯示「—」），維持原語意：單一分點失敗不中止摘要
+      const raw = await fetchTDR({ date, securities_trader_id:id }).catch(()=>[]);
       const bname = (raw[0] && raw[0].securities_trader) || nmById[id] || id;
       const agg = new Map();
       for (const x of raw){ let o = agg.get(x.stock_id); if(!o){ o={ c:x.stock_id, net:0 }; agg.set(x.stock_id,o); }
@@ -1547,7 +1584,7 @@ function insightHtml(){
   if (state.insightErr){ h += `<div class="empty" style="text-align:left;padding:14px">分析失敗：${esc(state.insightErr)}</div>`; return h; }
   if (state.insight){
     const u = state.insight.usage;
-    const tok = u ? `輸入 ${num((u.input_tokens||0)+(u.cache_read_input_tokens||0)+(u.cache_creation_input_tokens||0))}／輸出 ${num(u.output_tokens||0)} token` : "token數不明";
+    const tok = u ? `輸入 ${num(inTok(u))}／輸出 ${num(u.output_tokens||0)} token` : "token數不明";
     h += `<div class="insight-meta">生成時間 ${esc(state.insight.at)}（台灣）· 資料日 ${esc(state.insight.date||"—")} · 模型 ${esc(state.insight.model||state.insightModel)} · 本次 ${tok}</div>`;
     h += cloudLineHtml(state.insight.cloud);
     h += `<div class="insight-card insight-md">${linkifyStocks(mdToHtml(state.insight.text), stockCodeSet())}</div>`;
@@ -1901,10 +1938,10 @@ async function runSummary(){
   state.summaryLoading = false; state.summaryProg = ""; render();
 }
 // 結果渲染（最新結果／自動檔／手動歷史共用）：彙總全文＋meta＋折疊 6 份原文
-const sumTok = u => u ? `輸入 ${num((u.input_tokens||0)+(u.cache_read_input_tokens||0)+(u.cache_creation_input_tokens||0))}／輸出 ${num(u.output_tokens||0)}` : "token數不明";
+const sumTok = u => u ? `輸入 ${num(inTok(u))}／輸出 ${num(u.output_tokens||0)}` : "token數不明";
 function sumResultHtml(res, metaPrefix){
   const six = res.six || [];
-  const inSum = six.reduce((t,s)=>t+(s.usage?((s.usage.input_tokens||0)+(s.usage.cache_read_input_tokens||0)+(s.usage.cache_creation_input_tokens||0)):0),0);
+  const inSum = six.reduce((t,s)=>t+(s.usage?(inTok(s.usage)):0),0);
   const outSum = six.reduce((t,s)=>t+(s.usage?(s.usage.output_tokens||0):0),0);
   const sy = res.synthesis || {};
   const codeSet = stockCodeSet(); // 一次收集，彙總＋6份原文共用
@@ -2054,7 +2091,7 @@ function cloudHistSectionHtml(){
       h += sumResultHtml(cur.entry, `雲端 彙總手動 · 生成時間 ${esc(cur.entry.at||"")}（台灣）· 資料日 盤後 ${esc(dd.postmkt||"?")}／即時 ${esc(dd.live||"?")}／新聞 ${esc(dd.news||"?")}`);
     } else {
       const u = cur.entry.usage;
-      const tok = u ? `輸入 ${num((u.input_tokens||0)+(u.cache_read_input_tokens||0)+(u.cache_creation_input_tokens||0))}／輸出 ${num(u.output_tokens||0)} token` : "token數不明";
+      const tok = u ? `輸入 ${num(inTok(u))}／輸出 ${num(u.output_tokens||0)} token` : "token數不明";
       h += `<div class="insight-meta">雲端 ${esc(cur.label)} · 生成時間 ${esc(cur.entry.at||"")}（台灣）· 資料日 ${esc(cur.entry.date||"—")} · 模型 ${esc(cur.entry.model||"—")} · ${tok}</div>`;
       h += `<div class="insight-card insight-md">${linkifyStocks(mdToHtml(cur.entry.text||""), stockCodeSet())}</div>`;
     }
@@ -2063,12 +2100,11 @@ function cloudHistSectionHtml(){
 }
 document.addEventListener("click", e => {
   const co = e.target.closest("[data-cloud-open]");
-  if (!co) return;
-  const i = +co.dataset.cloudOpen;
-  state.cloudOpen = state.cloudOpen === i ? null : i;
-  render();
-});
-document.addEventListener("click", e => {
+  if (co){
+    const i = +co.dataset.cloudOpen;
+    state.cloudOpen = state.cloudOpen === i ? null : i;
+    render(); return;
+  }
   const rn = e.target.closest("[data-summary-run]");
   if (rn){ runSummary(); return; }
   const ab = e.target.closest("[data-summary-abort]");
@@ -2210,16 +2246,17 @@ async function runDiagAI(c){
     render(); return;
   }
   if (state.diagAI && state.diagAI.loading) return;
-  state.diagAI = { c, loading:true }; render();
+  const abort = new AbortController();  // 比照 runInsight/runSummary：可手動中斷（已送出的呼叫仍計費）
+  state.diagAI = { c, loading:true, abort }; render();
   try{
     const SYS = "你是台股客觀證據彙整助手。針對提供的單一持股：彙整五面向（籌碼/價量/題材/基本面/系統）事實、"
       + "市場區塊與組合層彙總指標，用繁體中文條列解讀——哪些證據偏多、哪些偏空、哪些互相矛盾、還缺什麼關鍵資訊。"
       + "已標「已驗證」的訊號代表歷史統計傾向，「描述性」未經回測，「交易所公告」為監理事實。"
       + "僅描述證據與風險，不預測股價、不給買進賣出指令。輸出精簡 markdown（250-450字）。";
-    const r = await callClaude(anthKey(), state.insightModel, SYS, diagGatherAI(c));
+    const r = await callClaude(anthKey(), state.insightModel, SYS, diagGatherAI(c), abort.signal);
     state.diagAI = { c, text:r.text, usage:r.usage, at:twNow(), model:state.insightModel };
   }catch(e){
-    state.diagAI = { c, err:String(e.message||e) };
+    state.diagAI = { c, err: abort.signal.aborted ? "已手動中斷（已送出的呼叫仍會計費）" : String(e.message||e) };
   }
   render();
 }
@@ -2492,20 +2529,26 @@ function diagCardHtml(hd){
     } else if (!news.length){
       h += `<div class="mut" style="font-size:.78rem">近 3 個交易日無命中新聞。</div>`;
     } else {
-      h += news.slice(0,8).map(n =>
-        `<div style="font-size:.8rem;padding:2px 0"><span class="mut">${esc(String(n.date||"").slice(5,16))}</span> `
-        + `<a href="${esc(n.link||"#")}" target="_blank" rel="noopener noreferrer" style="color:var(--accent)">${esc(n.title||"")}</a>`
-        + `<span class="mut" style="font-size:.72rem;margin-left:6px">${esc(n.source||"")}</span></div>`).join("");
+      h += news.slice(0,8).map(n => {
+        // esc() 防屬性逃逸但擋不住 javascript: 等 scheme——只有 http(s) 連結才輸出 <a>，其餘降級純文字
+        const link = /^https?:\/\//i.test(n.link||"") ? n.link : null;
+        const title = link
+          ? `<a href="${esc(link)}" target="_blank" rel="noopener noreferrer" style="color:var(--accent)">${esc(n.title||"")}</a>`
+          : `<span style="color:var(--accent)">${esc(n.title||"")}</span>`;
+        return `<div style="font-size:.8rem;padding:2px 0"><span class="mut">${esc(String(n.date||"").slice(5,16))}</span> `
+          + title + `<span class="mut" style="font-size:.72rem;margin-left:6px">${esc(n.source||"")}</span></div>`;
+      }).join("");
     }
     // AI 綜合解讀（按了才呼叫；重用既有 callClaude／anthropic_key）
     const ai = state.diagAI;
     const mine = ai && ai.c === c;
     h += `<div style="margin-top:10px"><button class="dbtn" data-diag-ai="${esc(c)}"${ai&&ai.loading?" disabled":""}>${mine&&ai.loading?"AI 解讀中…":"AI 解讀"}</button>`
+      + (mine&&ai.loading ? `<button class="dbtn" data-diag-ai-abort="1" style="margin-left:6px">中斷</button>` : "")
       + `<span class="mut" style="font-size:.72rem;margin-left:8px">按下才呼叫 Claude（token 自備、存本機）；送出＝本卡事實＋市場＋組合層彙總指標，不含持股清單/股數/成本</span></div>`;
     if (mine && ai.err) h += `<div class="dwarn" style="font-size:.8rem;margin-top:6px">${esc(ai.err)}</div>`;
     if (mine && ai.text){
       const u = ai.usage;
-      h += `<div class="insight-meta" style="margin-top:8px">AI 解讀 · ${esc(ai.at||"")}（台灣）· 模型 ${esc(ai.model||"")}${u?` · 輸入 ${num((u.input_tokens||0)+(u.cache_read_input_tokens||0)+(u.cache_creation_input_tokens||0))}／輸出 ${num(u.output_tokens||0)} token`:""}</div>`;
+      h += `<div class="insight-meta" style="margin-top:8px">AI 解讀 · ${esc(ai.at||"")}（台灣）· 模型 ${esc(ai.model||"")}${u?` · 輸入 ${num(inTok(u))}／輸出 ${num(u.output_tokens||0)} token`:""}</div>`;
       h += `<div class="insight-card insight-md">${linkifyStocks(mdToHtml(ai.text), stockCodeSet())}</div>`;
       h += `<div class="mut" style="font-size:.74rem;margin-top:4px">AI 解讀為證據彙整，非投資建議；「已驗證」僅代表歷史統計傾向，不保證未來表現。</div>`;
     }
@@ -2571,6 +2614,8 @@ document.addEventListener("click", e => {
     }
     render(); return;
   }
+  const aiAb = e.target.closest("[data-diag-ai-abort]");
+  if (aiAb){ if (state.diagAI && state.diagAI.abort) state.diagAI.abort.abort(); return; }
   const aiB = e.target.closest("[data-diag-ai]");
   if (aiB){ runDiagAI(aiB.dataset.diagAi); return; }
   const op = e.target.closest("[data-diag-open]");

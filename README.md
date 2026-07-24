@@ -66,44 +66,10 @@
 - **日期欄語意**：五 repo 所有產出檔的日期欄（欄位/語意/時區/粒度）對照表見
   [`docs/date-semantics.md`](docs/date-semantics.md)——跨站資料流除錯或調整 dlabel 對齊時先讀它。
 
-## 快速接手（2026-07-12；持股診斷段 2026-07-18 補；大盤餘額段 2026-07-19 補；主動ETF UI 段 2026-07-20 補；批次改進 2026-07-21 補）
+## 快速接手
 
-### 盤後批次改進四項（2026-07-21，依 b-group-investigation 調查結果）
-
-- **項5 ETF 持股加市值欄**：`renderAETF` 持股組合表新增「市值(億)」欄＝`stocks[code][3]/1e8`，
-  section 註記「市值依 FinMind 揭露日、非即時」；缺值顯「—」。資料源 build_aetf.py 已補逐股 mv
-  （v2 `src/build_aetf.py` `grab_holding()`），但 postmkt 讀 v2 raw latest.json，故要等 v2 排程
-  重跑 build_aetf push 後該欄才有實值（在此之前一律「—」，屬預期）。
-- **項8 大盤餘額只留金額**：`MKTBAL_PILLS` 由 4 pill（融資/融券/借券賣出/不限用途）縮為 2 pill：
-  融資餘額（只 `margin_money` 金額(億)、拿掉張數）＋借券賣出餘額（只 `sbl_short_value` 金額(元)＋
-  `mktNum` 千位點、拿掉股數）。融券/不限用途 TWSE/FinMind 官方無金額欄故不顯示；資料檔
-  `market_balance_history.json` 欄位不動、僅前端不消費那兩項。
-- **項9 融借券整合排行拆 TSE/券商兩區塊**：`index.html` 整合排行表把單一「借券餘額」欄組拆成
-  「TSE餘額」「券商餘額」兩區塊各 餘額(張)/異動(張)/市值(億)/市值異動(億)，刪掉合計三欄
-  （`plat_total*` 資料保留、Line 1381 摘要仍用不動）。後端 `build_postmkt.py build_lending()` 新增
-  `sys_mv_chg`/`otc_mv_chg`（=異動張數×收盤價，同 sbl_short_mv_chg 近似法）寫入 row。
-- **項10 日期 tab 移最右＋文案**：TABS 陣列 `["dates","日期"]` 移到 `["diag","持股診斷"]` 之後；
-  「自動產出」section 文案由「早場08:00／晚場22:00」更正為實際 cron「早場06:23／晚場22:47 台北」。
-- **驗證**：本機跑 build_postmkt（3481 群創 sys_mv_chg=-376891/otc_mv_chg=109469 千元）＋瀏覽器 11 tab
-  零 console error；大盤2pill、融借券兩區塊八欄無合計、ETF市值欄、借券賣出金額帶千位點、日期 tab 在最右皆實測。
-
-### 主動ETF tab 三項UI改進（2026-07-20，純前端，`renderAETF` 內）
-
-- **修「部分ETF點不進去」的bug**：根因是舊版 ETF 總覽表只在 `diff.etfs[code]` 有
-  buy/sell（`n_buy`/`n_sell` 非0）時才把 ETF 名稱掛可點（`data-etf`），00981A 等
-  當日無主動加減碼的 ETF（`n_buy=n_sell=0`）因此點不進去。改法：`ov` 每列一律
-  可點，不再看 `hasDiff`；`state.openEtf` 展開區塊改成先看 `latest.etfs[code]`
-  是否存在（持股一定有，只要 latest 載入成功），不再依賴 `diff.etfs[code]` 是否有值。
-- **展開區塊重排**：「最新持股組合」（讀 `latest.json etfs[code].stocks`，dict
-  `code→[股數,名稱,權重%]`，實測結構）移到「加減碼明細」**上方**，各自標資料日
-  （持股＝`src_date`；加減碼＝`de.d0→d1`，該 ETF 若無 diff 條目則退回
-  `diff.primary_date`）。無加減碼時顯示「今日無主動加減碼」而非空白兩欄。
-- **次產業流向明細補 ETF 名稱**：`so.detail[].etf` 原本只有代號，改用
-  `latest.etfs[code].name`（備援 `diff.etfs[code].name`）補上，呈現同
-  `code`+`nm` span 樣式（跟個股欄一致）。
-- 三項均已本機起 `python -m http.server` 跑 `index.html` 實測（00981A/00403A 兩種
-  case＋次產業展開），全 11 個 tab 逐一點擊 console 零 error；未動
-  `callClaude`/`mdToHtml`/`linkifyStocks` 等三站同步函式本體。
+帶日期的歷次變更紀錄已搬到 [`CHANGELOG.md`](CHANGELOG.md)（2026-07-24 起）；
+本節只留接手需要的常青內容（各 tab 口徑、資料流、教訓、維護約定）。
 
 ### 大盤餘額 tab（2026-07-19 上線）
 
@@ -119,7 +85,7 @@
   TWTA1U 六類別加總 16,092,652（仟股），與 unrestricted_shares 一致。
 - **已知教訓**：backfill 對 TWSE 端點是逐日高頻查詢（每日2+6次子請求 ×64個回補日），
   無節流會在約6次請求後被 TWSE IP 限流（回應變非JSON空內容），且限流後不會自動解除，
-  導致近八成資料全 null——务必保留 `_twse_throttled_get()` 的全域節流鎖與退避重試，
+  導致近八成資料全 null——务必保留 `twseclient.throttled_get()` 的全域節流鎖與退避重試，
   不要為了「加速」拿掉。
 - **前端**：`index.html` 插入式改動——`MKTBAL_PILLS`/`renderMktbal()`/`mktThead`/
   `mktCell`/`mktDiffCell` 等函式與 `renderDates()` 同樣繞過 `renderPM()`，直接掛在
@@ -160,7 +126,7 @@
   （`opts.s2`）、>200 列自動虛擬捲動。sticky 相關已知坑全記在 `<style>` 區註解：
   border-collapse/`.tblbox` padding 與 overflow 裁切邊界差（sticky top/left 要設負 padding 值）、
   thead 兩列要 `<tr>` 本身 sticky、rAF 在背景分頁不觸發（量測用 setTimeout、
-  虛擬捲動有 200ms 輪詢保險）。
+  虛擬捲動有 300ms 輪詢保險，背景分頁跳過）。
 - TWSE 端點的「合計」市場總計列要濾掉（代號欄非 ASCII 英數），TWT72U/TWTC7U/TWT53U 都有。
 - 分點查詢聚合：張數保留小數、只在顯示時捨入（先逐列 round 再加總會偏差且讓個股
   買賣超合計出現假非零）。金額顯示單位＝百萬元 1 位小數（`milF/milS`，÷1e6，僅此表用；
