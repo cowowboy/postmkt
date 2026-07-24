@@ -32,8 +32,10 @@ from pathlib import Path
 import requests
 
 ROOT = Path(__file__).resolve().parent
+sys.path.insert(0, str(ROOT / "src"))
+from fmclient import TAIPEI, api_get, token as fm_token  # noqa: E402
+
 OUT_DIR = ROOT / "data" / "summary"
-TAIPEI = dt.timezone(dt.timedelta(hours=8))
 
 # ---------- 資料源 ----------
 URL_POSTMKT = "https://raw.githubusercontent.com/shihpc/postmkt/main/data/postmkt.json"
@@ -310,7 +312,7 @@ def gather_postmkt(pm: dict, aetf_latest, aetf_diff, tf) -> dict:
             parts.append(f"{dlabel('三大法人買賣超（盤後法人動態站）', tf.get('date'))}\n" + "\n".join(seg))
 
     # 融借券整合排行（依兩平台借券餘額；含放空/融資/當沖/三大法人）
-    lr = (d.get("lending") or {}).get("rows") or []
+    lr = _augment_lending((d.get("lending") or {}).get("rows") or [])
     if lr:
         def lend_line(r):
             usage = "—" if r.get("usage_ratio") is None else f"{r['usage_ratio']:.0f}"
@@ -361,11 +363,28 @@ def gather_postmkt(pm: dict, aetf_latest, aetf_diff, tf) -> dict:
     return {"text": "\n\n".join(parts), "primary": primary, "dates": dlabel.dates}
 
 
+def _augment_lending(rows: list) -> list:
+    """postmkt.json 瘦身（2026-07-24）後 lending.rows 只存基礎量＋px，衍生欄由消費端重建。
+    本函式只重建 gather_postmkt 消費的 5 欄（plat_total/plat_total_chg/*_net）；
+    完整重建版在 index.html augmentLending()，公式一致（張×px＝千元），改動需同步。
+    舊版資料（無 px 欄）原樣返回，前後版相容。"""
+    if not rows or "px" not in rows[0]:
+        return rows
+    for r in rows:
+        px = r.get("px")
+        r["plat_total"] = (r.get("sys_bal") or 0) + (r.get("otc_bal") or 0)
+        r["plat_total_chg"] = (r.get("sys_chg") or 0) + (r.get("otc_chg") or 0)
+        for base, out in (("foreign_vol", "foreign_net"), ("trust_vol", "trust_net"),
+                          ("dealer_vol", "dealer_net")):
+            v = r.get(base)
+            r[out] = js_round(v * px) if (px and v is not None) else None
+    return rows
+
+
 def fetch_brokers_context(pm: dict, primary: str) -> str:
     """postmkt insightFetchBrokers() 移植：指定分點當日進出（FinMind），
     依股票聚合成買賣超金額，各分點取前8買/賣。無 FINMIND_TOKEN 則整段標略過。"""
-    token = os.environ.get("FINMIND_TOKEN", "").strip()
-    if not token:
+    if not fm_token():
         return "【指定分點單點進出】（未設定 FinMind token，略過分點分析）"
     brokers = (pm or {}).get("brokers") or {}
     date = brokers.get("date") or ""
@@ -386,12 +405,12 @@ def fetch_brokers_context(pm: dict, primary: str) -> str:
     out = []
     for bid in INSIGHT_BROKERS:
         try:
-            r = requests.get(URL_FINMIND_TDR,
-                             params={"dataset": "TaiwanStockTradingDailyReport", "date": date,
-                                     "securities_trader_id": bid, "token": token},
-                             timeout=60)
-            j = r.json()
-            raw = (j.get("data") or []) if (r.ok and j.get("status") in (200, None)) else []
+            # 專屬 endpoint（非 /api/v4/data），走 fmclient 統一重試；失敗吞掉＝該分點段落略過（原語意）
+            try:
+                raw = api_get("TaiwanStockTradingDailyReport", url=URL_FINMIND_TDR,
+                              date=date, securities_trader_id=bid)
+            except Exception:
+                raw = []
             bname = (raw[0].get("securities_trader") if raw else None) or nm_by_id.get(bid) or bid
             agg: dict[str, float] = {}
             for x in raw:
@@ -617,6 +636,8 @@ def gather_news(data, morning, us) -> dict:
 
 
 # ---------- SYS prompts（原樣取自三站前端與規格書，勿改寫） ----------
+# SYS_POSTMKT 唯一事實來源＝本 repo index.html 的 SUM_SYS_POSTMKT 常數，
+# 此處為移植複本——改動該常數時需逐字同步這裡（2026-07-24 已驗 953 字逐字一致）
 
 SYS_POSTMKT = (
     "你是積極的台股盤後籌碼策略分析師。任務：彙整本頁各 tab 資料，產出以「找出 alpha 標的」為核心的洞見與可操作建議。"

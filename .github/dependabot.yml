@@ -1,0 +1,11 @@
+# Actions tag 與 pip 依賴的自動更新 PR（每月一批；供應鏈面比手動 pin SHA 省維護）
+version: 2
+updates:
+  - package-ecosystem: github-actions
+    directory: "/"
+    schedule:
+      interval: monthly
+  - package-ecosystem: pip
+    directory: "/"
+    schedule:
+      interval: monthly

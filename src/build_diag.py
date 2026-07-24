@@ -31,7 +31,6 @@ from __future__ import annotations
 import argparse
 import datetime as dt
 import json
-import os
 import sys
 import time
 from pathlib import Path
@@ -43,8 +42,9 @@ try:  # Windows 本地終端 cp950 會把中文 print 成亂碼/報錯；Actions
 except Exception:
     pass
 
+from fmclient import api_get, taipei_today, token  # noqa: E402 — 同目錄共用模組
+
 ROOT = Path(__file__).resolve().parent.parent  # repo 根（本檔在 src/ 下）
-BASE = "https://api.finmindtrade.com/api/v4/data"
 V2_RAW = "https://raw.githubusercontent.com/shihpc/taiwan-flow-live-v2/main/data"
 
 OUT_PATH = ROOT / "data" / "diag" / "diag.json"
@@ -64,36 +64,14 @@ VAL_CAP = 100          # 估值/除權息（PER 3年百分位＋股利公告）�
 VAL_STALE_DAYS = 14    # 估值/除權息超過 N 天沒查過才重查
 SAMPLE_CODES = ["2330", "2317", "2603", "3231"]
 
-
-def token() -> str:
-    return os.environ.get("FINMIND_TOKEN", "").strip()
-
-
-def api_get(dataset: str, **params) -> list:
-    """通用 /api/v4/data 查詢（同 build_postmkt.py 封裝）。失敗重試一次；
-    遇 402/429 限流先等 65 秒再重試。二次仍失敗 -> raise（由呼叫端決定要不要吞）。"""
-    q = dict(params, dataset=dataset)
-    t = token()
-    if t:
-        q["token"] = t
-    last = None
-    for attempt in (1, 2):
-        try:
-            r = requests.get(BASE, params=q, timeout=60)
-            if r.status_code in (402, 429):
-                raise RuntimeError(f"{dataset}: rate limited (HTTP {r.status_code})")
-            r.raise_for_status()
-            j = r.json()
-            if j.get("status") not in (200, None):
-                raise RuntimeError(f"{dataset}: {j.get('msg')}")
-            return j.get("data") or []
-        except Exception as e:  # noqa: BLE001 — 統一重試
-            last = e
-            if attempt == 1:
-                wait = 65 if "rate limited" in str(e) else 3
-                print(f"  ! {dataset} 失敗（{e}），{wait}s 後重試一次")
-                time.sleep(wait)
-    raise RuntimeError(f"{dataset}: 重試後仍失敗: {last}")
+# 回補窗（日曆日）——full 與 --sample 兩條路徑共用同一組常數，避免兩邊各寫一份
+# 數字後漂移、讓本地 --sample 驗證失去代表性（2026-07-24 集中）
+INST_BACK_DAYS = 32    # 法人：INST_DAYS=20 交易日 ≈ 28 日曆日＋緩衝
+BAL_BACK_DAYS = 12     # 融資/借券：BAL_DAYS=7 交易日
+HOLD_START_DAYS = 21   # 千張大戶（週資料）：涵蓋最近 2-3 週
+REV_BACK_DAYS = 830    # 月營收（sample 用）：涵蓋 REV_MONTHS=26 個月（≈790 日）＋緩衝
+VAL_3Y_DAYS = 365 * 3  # PER/PBR 百分位樣本窗
+VAL_DIV_DAYS = 550     # 股利公告查詢窗（近 18 個月）
 
 
 def get_raw(url: str):
@@ -109,10 +87,6 @@ def get_raw(url: str):
                 time.sleep(3)
     print(f"  ! {url} 二次失敗，相關欄位標 null")
     return None
-
-
-def taipei_today() -> dt.date:
-    return (dt.datetime.now(dt.timezone.utc) + dt.timedelta(hours=8)).date()
 
 
 def r2(v):
@@ -226,7 +200,7 @@ def update_inst_cache(cache: dict, today: dt.date):
     每檔 2 條陣列：[外資買賣超(張), 投信買賣超(張)]（外資含外資自營）。"""
     sec = cache.setdefault("inst", {})
     try:
-        for d in _missing_dates(sec.get("dates", []), today, 32):
+        for d in _missing_dates(sec.get("dates", []), today, INST_BACK_DAYS):
             rows = api_get("TaiwanStockInstitutionalInvestorsBuySell", start_date=d, end_date=d)
             if not rows:
                 continue
@@ -255,7 +229,7 @@ def update_balance_cache(cache: dict, key: str, dataset: str, pick, today: dt.da
     """餘額 panel（融資 mg／借券 sb）：全市場逐日增量，每檔一維陣列＝餘額(張)。"""
     sec = cache.setdefault(key, {})
     try:
-        for d in _missing_dates(sec.get("dates", []), today, 12):
+        for d in _missing_dates(sec.get("dates", []), today, BAL_BACK_DAYS):
             rows = api_get(dataset, start_date=d, end_date=d)
             if not rows:
                 continue
@@ -281,7 +255,7 @@ def update_holding_cache(cache: dict, universe: list, today: dt.date):
     stale_before = (today - dt.timedelta(days=HOLD_STALE_DAYS)).isoformat()
     todo = [c for c in universe if (sec.get(c) or {}).get("chk", "") <= stale_before][:HOLD_CAP]
     print(f"  hold：待刷新 {len(todo)} 檔（上限 {HOLD_CAP}）")
-    start = (today - dt.timedelta(days=21)).isoformat()
+    start = (today - dt.timedelta(days=HOLD_START_DAYS)).isoformat()
     done = 0
     for code in todo:
         try:
@@ -389,16 +363,19 @@ def _pctile(series: list, cur: float):
 
 
 def _next_exdiv(rows: list, today_s: str):
-    """從 TaiwanStockDividend 公告列找下一個（>= 今日）除權/除息交易日。"""
-    best = None, None  # (date, kind)
+    """從 TaiwanStockDividend 公告列找下一個（>= 今日）除權/除息交易日。
+    先蒐集全部候選日再取最小、彙整該日所有 kind——舊版邊掃邊更新 best，
+    同日現金＋股票的合併依賴輸入順序、特定順序下會漏合（2026-07-24 改寫）。"""
+    cand: dict[str, set] = {}
     for r in rows:
         for f, kind in (("CashExDividendTradingDate", "現金"), ("StockExDividendTradingDate", "股票")):
             d = (r.get(f) or "").strip()
-            if d and d >= today_s and (best[0] is None or d < best[0]):
-                best = (d, kind)
-            elif d and d == best[0] and best[1] != kind:
-                best = (d, "現金+股票")
-    return best
+            if d and d >= today_s:
+                cand.setdefault(d, set()).add(kind)
+    if not cand:
+        return None, None
+    d = min(cand)
+    return d, ("現金+股票" if len(cand[d]) == 2 else next(iter(cand[d])))
 
 
 def update_val_cache(cache: dict, universe: list, today: dt.date):
@@ -411,8 +388,8 @@ def update_val_cache(cache: dict, universe: list, today: dt.date):
     stale_before = (today - dt.timedelta(days=VAL_STALE_DAYS)).isoformat()
     todo = [c for c in universe if (sec.get(c) or {}).get("chk", "") <= stale_before][:VAL_CAP]
     print(f"  val：待刷新 {len(todo)} 檔（上限 {VAL_CAP}）")
-    start3y = (today - dt.timedelta(days=365 * 3)).isoformat()
-    start18m = (today - dt.timedelta(days=550)).isoformat()
+    start3y = (today - dt.timedelta(days=VAL_3Y_DAYS)).isoformat()
+    start18m = (today - dt.timedelta(days=VAL_DIV_DAYS)).isoformat()
     done = 0
     for code in todo:
         ent = sec.setdefault(code, {})
@@ -767,7 +744,7 @@ def fetch_sample(codes, today):
                 arrs[i].append(v[i])
         price_sec["stocks"][code] = arrs
 
-    start_i = (today - dt.timedelta(days=32)).isoformat()
+    start_i = (today - dt.timedelta(days=INST_BACK_DAYS)).isoformat()
     for code in codes:
         try:
             rows = api_get("TaiwanStockInstitutionalInvestorsBuySell", data_id=code, start_date=start_i)
@@ -784,7 +761,7 @@ def fetch_sample(codes, today):
         except Exception as e:  # noqa: BLE001
             print(f"  ! sample inst {code}: {e}")
 
-    start_b = (today - dt.timedelta(days=12)).isoformat()
+    start_b = (today - dt.timedelta(days=BAL_BACK_DAYS)).isoformat()
     for code in codes:
         try:
             rows = api_get("TaiwanStockMarginPurchaseShortSale", data_id=code, start_date=start_b)
@@ -798,7 +775,7 @@ def fetch_sample(codes, today):
             print(f"  ! sample shortbal {code}: {e}")
         try:
             rows = api_get("TaiwanStockHoldingSharesPer", data_id=code,
-                           start_date=(today - dt.timedelta(days=21)).isoformat())
+                           start_date=(today - dt.timedelta(days=HOLD_START_DAYS)).isoformat())
             by_date = {r["date"]: r.get("percent") for r in rows
                        if r.get("HoldingSharesLevel") == "more than 1,000,001"}
             if by_date:
@@ -810,9 +787,9 @@ def fetch_sample(codes, today):
     # 基本面（子期2）：月營收 / 估值 / 除權息，單檔查詢版
     rev_sec = {"months": [], "stocks": {}}
     per_map, val_map = {}, {}
-    start_rev = (today - dt.timedelta(days=830)).isoformat()
-    start3y = (today - dt.timedelta(days=365 * 3)).isoformat()
-    start18m = (today - dt.timedelta(days=550)).isoformat()
+    start_rev = (today - dt.timedelta(days=REV_BACK_DAYS)).isoformat()
+    start3y = (today - dt.timedelta(days=VAL_3Y_DAYS)).isoformat()
+    start18m = (today - dt.timedelta(days=VAL_DIV_DAYS)).isoformat()
     raw_rev = {}
     for code in codes:
         try:

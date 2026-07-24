@@ -1,2 +1,7 @@
 .env
 __pycache__/
+*.pyc
+.venv/
+.DS_Store
+# 增量快取改走 actions/cache（見 diag.yml），不進版本控制（2026-07-24）
+data/diag/cache.json

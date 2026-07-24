@@ -10,34 +10,17 @@ from __future__ import annotations
 
 import datetime as dt
 import json
-import os
 import sys
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
-import requests
-
 ROOT = Path(__file__).resolve().parent
-BASE = "https://api.finmindtrade.com/api/v4/data"
+sys.path.insert(0, str(ROOT / "src"))
+from fmclient import TAIPEI, api_get, token  # noqa: E402
+from twseclient import resolve_cols, throttled_get  # noqa: E402 — TWSE 全域節流（限流教訓見該檔檔頭）
+
 TOP_N = 50
 MAX_BACK_DAYS = 5
-
-
-def token() -> str:
-    t = os.environ.get("FINMIND_TOKEN", "").strip()
-    if not t:
-        raise RuntimeError("找不到環境變數 FINMIND_TOKEN")
-    return t
-
-
-def api_get(dataset: str, **params) -> list:
-    """通用 /api/v4/data 查詢（同 taiwan-flow-live-v2 的封裝寫法）。"""
-    params.update(dataset=dataset, token=token())
-    r = requests.get(BASE, params=params, timeout=60)
-    r.raise_for_status()
-    j = r.json()
-    if j.get("status") not in (200, None):
-        raise RuntimeError(f"{dataset}: {j.get('msg')}")
-    return j.get("data") or []
 
 
 def fetch_latest(dataset: str, base_date: dt.date) -> tuple[str, list]:
@@ -78,7 +61,7 @@ def fetch_twse_lending(date: str, select_type: str) -> dict:
     j = None
     for attempt in range(2):
         try:
-            r = requests.get("https://www.twse.com.tw/rwd/zh/lending/TWT72U",
+            r = throttled_get("https://www.twse.com.tw/rwd/zh/lending/TWT72U",
                               params={"date": date.replace("-", ""), "selectType": select_type, "response": "json"},
                               timeout=30)
             r.raise_for_status()
@@ -98,6 +81,16 @@ def fetch_twse_lending(date: str, select_type: str) -> dict:
         except (TypeError, ValueError):
             return 0.0
 
+    # 欄位定位改吃 fields metadata（TWSE 改欄位順序不再靜默錯值），fallback＝歷史固定順序：
+    # 代號/名稱/前日餘額/當日借/當日還/當日餘額/收盤價/當日餘額市值/註記
+    cols = resolve_cols(j, {
+        "prev": (2, ("前日", "餘額"), ("市值",)),
+        "in":   (3, ("借",), ("餘額", "市值")),
+        "out":  (4, ("還",), ()),
+        "bal":  (5, ("餘額",), ("前日", "市值")),
+        "mv":   (7, ("市值",), ()),
+    })
+    max_idx = max(cols.values())
     out = {}
     for row in j.get("data") or []:
         if not row or not row[0]:
@@ -105,10 +98,13 @@ def fetch_twse_lending(date: str, select_type: str) -> dict:
         c = str(row[0]).strip()
         if not c.isascii() or not c.isalnum():
             continue  # 排除「合計」市場總計列（代號欄是中文，非真實股票代號）
-        # 欄位順序：代號/名稱/前日餘額/當日借/當日還/當日餘額/收盤價/當日餘額市值/註記
+        if len(row) <= max_idx:
+            print(f"  ⚠ TWSE {select_type} 列 {c} 欄位數不足（{len(row)}），略過", flush=True)
+            continue
         # 原始單位：股／元，統一轉張／千元，跟其餘 dataset 的單位一致
-        out[c] = {"prev": num(row[2]) / 1000, "in": num(row[3]) / 1000, "out": num(row[4]) / 1000,
-                  "bal": num(row[5]) / 1000, "mv": num(row[7]) / 1000}
+        out[c] = {"prev": num(row[cols["prev"]]) / 1000, "in": num(row[cols["in"]]) / 1000,
+                  "out": num(row[cols["out"]]) / 1000,
+                  "bal": num(row[cols["bal"]]) / 1000, "mv": num(row[cols["mv"]]) / 1000}
     return out
 
 
@@ -119,8 +115,8 @@ def fetch_twse_oddlot(base_date: dt.date, report: str) -> tuple[str, list]:
     for back in range(MAX_BACK_DAYS + 1):
         d = base_date - dt.timedelta(days=back)
         try:
-            r = requests.get(f"https://www.twse.com.tw/rwd/zh/afterTrading/{report}",
-                             params={"date": d.strftime("%Y%m%d"), "response": "json"}, timeout=30)
+            r = throttled_get(f"https://www.twse.com.tw/rwd/zh/afterTrading/{report}",
+                              params={"date": d.strftime("%Y%m%d"), "response": "json"}, timeout=30)
             r.raise_for_status()
             j = r.json()
         except Exception as e:
@@ -204,6 +200,37 @@ def build_margin(date: str, rows: list, nm: dict) -> dict:
     return {"date": date, "increase": inc, "decrease": dec, "usage": usage}
 
 
+def _agg_lend_deals(lend_rows: list) -> dict:
+    """借券成交明細（逐筆）→ 依股票彙總當日成交量/筆數/最高費率。"""
+    out: dict[str, dict] = {}
+    for r in lend_rows:
+        c = r.get("stock_id", "")
+        o = out.setdefault(c, {"vol": 0, "deals": 0, "fee_max": None})
+        o["vol"] += r.get("volume") or 0
+        o["deals"] += 1
+        fr = r.get("fee_rate")
+        if fr is not None and (o["fee_max"] is None or fr > o["fee_max"]):
+            o["fee_max"] = fr
+    return out
+
+
+def _agg_inst_net(inst_rows: list) -> dict:
+    """三大法人買賣超：dataset 給股數，依身分別彙總淨買賣股數（外資含外資自營）。"""
+    out: dict[str, dict] = {}
+    for r in inst_rows:
+        c = r.get("stock_id", "")
+        o = out.setdefault(c, {"foreign": 0, "trust": 0, "dealer": 0})
+        net = (r.get("buy") or 0) - (r.get("sell") or 0)
+        name = r.get("name")
+        if name in ("Foreign_Investor", "Foreign_Dealer_Self"):
+            o["foreign"] += net
+        elif name == "Investment_Trust":
+            o["trust"] += net
+        elif name in ("Dealer_self", "Dealer_Hedging", "Dealer"):
+            o["dealer"] += net
+    return out
+
+
 def build_lending(date: str, lend_rows: list, margin_rows: list, short_rows: list,
                    dt_rows: list, dt_date: str, price_rows: list, inst_rows: list,
                    hold_rows: list, nm: dict) -> dict:
@@ -218,35 +245,11 @@ def build_lending(date: str, lend_rows: list, margin_rows: list, short_rows: lis
     sys_bal = fetch_twse_lending(date, "SLB") if date else {}
     otc_bal = fetch_twse_lending(date, "NLB") if date else {}
 
-    # 借券成交明細（逐筆）→ 依股票彙總當日成交量/筆數/最高費率
-    lend_agg: dict[str, dict] = {}
-    for r in lend_rows:
-        c = r.get("stock_id", "")
-        o = lend_agg.setdefault(c, {"vol": 0, "deals": 0, "fee_max": None})
-        o["vol"] += r.get("volume") or 0
-        o["deals"] += 1
-        fr = r.get("fee_rate")
-        if fr is not None and (o["fee_max"] is None or fr > o["fee_max"]):
-            o["fee_max"] = fr
-
+    lend_agg = _agg_lend_deals(lend_rows)
+    inst_by_c = _agg_inst_net(inst_rows)
     # 融資融券（融資買賣餘額 + 融券放空、券商營業處所借券賣出SBL流量+餘額都在同一個dataset）
     margin_by_c = {r.get("stock_id"): r for r in margin_rows}
     short_by_c = {r.get("stock_id"): r for r in short_rows}
-
-    # 三大法人買賣超金額：dataset給股數，乘收盤價換算成金額（千元）
-    inst_by_c: dict[str, dict] = {}
-    for r in inst_rows:
-        c = r.get("stock_id", "")
-        o = inst_by_c.setdefault(c, {"foreign": 0, "trust": 0, "dealer": 0})
-        net = (r.get("buy") or 0) - (r.get("sell") or 0)
-        name = r.get("name")
-        if name in ("Foreign_Investor", "Foreign_Dealer_Self"):
-            o["foreign"] += net
-        elif name == "Investment_Trust":
-            o["trust"] += net
-        elif name in ("Dealer_self", "Dealer_Hedging", "Dealer"):
-            o["dealer"] += net
-
     hold_by_c = {r.get("stock_id"): r for r in hold_rows}
 
     codes = set(sys_bal) | set(otc_bal) | set(lend_agg) | set(margin_by_c) | set(short_by_c)
@@ -263,11 +266,6 @@ def build_lending(date: str, lend_rows: list, margin_rows: list, short_rows: lis
         plat_total = sys_bal_v + otc_bal_v
         sys_chg = round(sb.get("in", 0) - sb.get("out", 0))
         otc_chg = round(ob.get("in", 0) - ob.get("out", 0))
-        sys_mv = round(sb.get("mv", 0))
-        otc_mv = round(ob.get("mv", 0))
-        # 各平台市值異動（千元）＝異動張數×今日收盤價，同 sbl_short_mv_chg 的近似法（見 L280-281 警語）
-        sys_mv_chg = round(sys_chg * px) if px else None
-        otc_mv_chg = round(otc_chg * px) if px else None
         sbl_short = (s.get("SBLShortSalesCurrentDayBalance") or 0) / 1000
         sbl_short_prev = (s.get("SBLShortSalesPreviousDayBalance") or 0) / 1000
         margin_short = (s.get("MarginShortSalesCurrentDayBalance") or 0) / 1000
@@ -276,35 +274,23 @@ def build_lending(date: str, lend_rows: list, margin_rows: list, short_rows: lis
         margin_limit = m.get("MarginPurchaseLimit") or 0
         short_limit = (s.get("MarginShortSalesQuota") or 0) / 1000
         margin_chg = round(margin_bal - (m.get("MarginPurchaseYesterdayBalance") or 0))
-        # 市值（千元）＝張數×收盤價；沒收盤價就不估
-        sbl_short_mv = round(sbl_short * px) if px else None
-        margin_short_mv = round(margin_short * px) if px else None
-        margin_mv = round(margin_bal * px) if px else None
-        # 市值異動（千元）＝張數異動×今日收盤價。無逐日歷史收盤價可回推昨日市值，
-        # 用「異動張數在今日價位的等值」做估計，非「今日市值－昨日市值」的精確差。
         sbl_short_chg_v = round(sbl_short - sbl_short_prev)
         margin_short_chg_v = round(margin_short - margin_short_prev)
-        sbl_short_mv_chg = round(sbl_short_chg_v * px) if px else None
-        margin_short_mv_chg = round(margin_short_chg_v * px) if px else None
-        short_total_mv_chg = (sbl_short_mv_chg + margin_short_mv_chg) if px else None
-        margin_mv_chg = round(margin_chg * px) if px else None
 
+        # 瘦身（2026-07-24）：市值/金額衍生欄（*_mv_chg、*_net、plat_total*、short_total*、
+        # foreign_shares_mv 等）不再落地——一律可由「基礎量 × px（當日收盤價）」重建，
+        # 由消費端現算：前端 index.html augmentLending()、摘要管線 build_summary.py
+        # _augment_lending()，公式必須與原後端版一致。由捨入後基礎量重建與原值最多差
+        # ±0.5張×px（千元級），遠小於顯示精度（億、1-2位小數）。省 ~0.8MB/2.4MB。
+        # sys_mv/otc_mv 例外保留：TWSE 官方市值欄（官方收盤口徑），非本管線推算。
         row = {
-            "c": c, "n": nm.get(c, ""),
+            "c": c, "n": nm.get(c, ""), "px": px,
             # 兩平台借券餘額（張；fetch_twse_lending()已將股轉張、元轉千元）
-            "sys_bal": round(sys_bal_v), "sys_chg": sys_chg, "sys_mv": sys_mv, "sys_mv_chg": sys_mv_chg,
-            "otc_bal": round(otc_bal_v), "otc_chg": otc_chg, "otc_mv": otc_mv, "otc_mv_chg": otc_mv_chg,
-            "plat_total": round(plat_total), "plat_total_chg": sys_chg + otc_chg,
-            "plat_total_mv": sys_mv + otc_mv,
+            "sys_bal": round(sys_bal_v), "sys_chg": sys_chg, "sys_mv": round(sb.get("mv", 0)),
+            "otc_bal": round(otc_bal_v), "otc_chg": otc_chg, "otc_mv": round(ob.get("mv", 0)),
             # Short interest（放空部位：借賣＝SBL借券賣出、融券）
             "sbl_short_bal": round(sbl_short), "sbl_short_chg": sbl_short_chg_v,
-            "sbl_short_mv": sbl_short_mv, "sbl_short_mv_chg": sbl_short_mv_chg,
             "margin_short_bal": round(margin_short), "margin_short_chg": margin_short_chg_v,
-            "margin_short_mv": margin_short_mv, "margin_short_mv_chg": margin_short_mv_chg,
-            "short_total": round(sbl_short + margin_short),
-            "short_total_chg": sbl_short_chg_v + margin_short_chg_v,
-            "short_total_mv": (sbl_short_mv + margin_short_mv) if px else None,
-            "short_total_mv_chg": short_total_mv_chg,
             "usage_ratio": round(sbl_short / plat_total * 100, 2) if plat_total > 0 else None,
             # 借券賣出SBL流量明細（千元/張）
             "sbl_sales": round((s.get("SBLShortSalesShortSales") or 0) / 1000),
@@ -313,23 +299,18 @@ def build_lending(date: str, lend_rows: list, margin_rows: list, short_rows: lis
             "lend_vol": la.get("vol", 0), "lend_deals": la.get("deals", 0), "lend_fee_max": la.get("fee_max"),
             # 融資
             "margin_buy": m.get("MarginPurchaseBuy"), "margin_bal": round(margin_bal),
-            "margin_chg": margin_chg, "margin_mv": margin_mv, "margin_mv_chg": margin_mv_chg,
+            "margin_chg": margin_chg,
             "margin_usage": round(margin_bal / margin_limit * 100, 2) if margin_limit > 0 else None,
             "short_usage": round(margin_short / short_limit * 100, 2) if short_limit > 0 else None,
             "credit_ratio": round(margin_short / margin_bal * 100, 2) if margin_bal > 0 else None,
             "offset": m.get("OffsetLoanAndShort"),
             # 當沖（由呼叫端合併，避免這裡重複算比重分母）
-            # 三大法人買賣超（張數：股數差÷1000；金額千元＝股數差×收盤價÷1000）
+            # 三大法人買賣超（張數：股數差÷1000；金額衍生欄由消費端 vol×px 重建）
             "foreign_vol": round(it["foreign"] / 1000),
-            "foreign_net": round(it["foreign"] * px / 1000) if px else None,
             "trust_vol": round(it["trust"] / 1000),
-            "trust_net": round(it["trust"] * px / 1000) if px else None,
             "dealer_vol": round(it["dealer"] / 1000),
-            "dealer_net": round(it["dealer"] * px / 1000) if px else None,
             # 外資持股
             "foreign_shares": hd.get("ForeignInvestmentShares"),
-            "foreign_shares_mv": round(hd.get("ForeignInvestmentShares") * px / 1000)
-                if (px and hd.get("ForeignInvestmentShares") is not None) else None,
             "foreign_ratio": hd.get("ForeignInvestmentSharesRatio"),
             "foreign_remain_ratio": hd.get("ForeignInvestmentRemainRatio"),
             "foreign_limit_ratio": hd.get("ForeignInvestmentUpperLimitRatio"),
@@ -356,7 +337,7 @@ def build_lending(date: str, lend_rows: list, margin_rows: list, short_rows: lis
         else:
             row["dt_vol"] = row["dt_amt"] = row["dt_diff"] = None
 
-    rows_out.sort(key=lambda x: -x["plat_total"])
+    rows_out.sort(key=lambda x: -(x["sys_bal"] + x["otc_bal"]))  # 依兩平台借券餘額合計
     # 不截斷到TOP_N：Table1的定位是「查任一檔股票」，前端主排行榜只顯示前TOP_N，
     # 但完整清單要留給搜尋功能查詢不在前段班的股票（見cmoney-sbl-mapping-research.md）。
     return {"date": date, "rows": rows_out,
@@ -389,14 +370,15 @@ def daytrading_broker_estimate(date: str, codes: list, close_map: dict, top_k: i
     分點當沖貢獻度估算法，非逐筆交易的直接證據（可能是不同客戶各自
     單向交易剛好量相近）。每檔一次API call，逐檔失敗不影響其他檔。
     金額（千元）以當日收盤價估算張數對應金額，非分點實際成交均價
-    （該dataset沒有逐價位對應的分點均價可用）。"""
-    out = {}
-    for c in codes:
+    （該dataset沒有逐價位對應的分點均價可用）。
+    50 檔逐檔查詢是本管線主要耗時來源，用 3 併發輕度並行（FinMind 額度內；
+    非 TWSE 端點、不涉 IP 限流教訓，且 fmclient 已有 402/429 退避）。"""
+    def one(c: str):
         try:
             rows = api_get("TaiwanStockTradingDailyReport", data_id=c, start_date=date, end_date=date)
         except Exception as e:
             print(f"  分點資料抓取失敗 {c}：{e}", flush=True)
-            continue
+            return c, None
         agg: dict[str, list] = {}
         for r in rows:
             t = r.get("securities_trader")
@@ -410,7 +392,13 @@ def daytrading_broker_estimate(date: str, codes: list, close_map: dict, top_k: i
                 "money": round(min(b, s) / 1000 * px) if px else None}
                for t, (b, s) in agg.items() if min(b, s) > 0]
         est.sort(key=lambda x: -(x["money"] or 0))
-        out[c] = est[:top_k]
+        return c, est[:top_k]
+
+    out = {}
+    with ThreadPoolExecutor(max_workers=3) as ex:
+        for c, est in ex.map(one, codes):
+            if est is not None:
+                out[c] = est
     return out
 
 
@@ -440,20 +428,17 @@ def build_daytrading(date: str, rows: list, price_rows: list, nm: dict) -> dict:
             "chg_pct": chg_pct, "amp_pct": amp_pct,
         })
     by_amount = sorted(recs, key=lambda x: -x["amt"])[:TOP_N]
-    # 比重榜過濾極小量股（總量 < 500 張）避免失真
-    by_ratio = sorted((x for x in recs if x["ratio"] is not None and (tv.get(x["c"]) or 0) >= 500_000),
-                      key=lambda x: -x["ratio"])[:TOP_N]
+    # by_ratio（比重榜）2026-07-24 停產：前端與摘要管線只消費 by_amount，比重榜
+    # 從未被渲染；停產同時把分點推估查詢從「兩榜聯集 ~100 檔」減半為金額榜 50 檔
 
-    codes = sorted({x["c"] for x in by_amount} | {x["c"] for x in by_ratio})
+    codes = sorted({x["c"] for x in by_amount})
     if date and codes:
         print(f"  券商分點推估：{len(codes)} 檔逐一查詢…", flush=True)
         brokers = daytrading_broker_estimate(date, codes, close_map)
         for x in by_amount:
             x["traders"] = brokers.get(x["c"], [])
-        for x in by_ratio:
-            x["traders"] = brokers.get(x["c"], [])
 
-    return {"date": date, "by_amount": by_amount, "by_ratio": by_ratio}
+    return {"date": date, "by_amount": by_amount}
 
 
 def block_trader_map(date: str) -> dict:
@@ -516,6 +501,7 @@ def build_blocktrade(date: str, rows: list, nm: dict) -> dict:
 
 
 def main() -> None:
+    token(required=True)  # 本管線 token 必要；缺就在開跑前失敗，不要抓到一半才炸
     today = dt.date.today()
     print("抓取 FinMind 盤後資料…")
     nm = stock_names()
@@ -535,8 +521,10 @@ def main() -> None:
     # 借券tab整合多個dataset，用短餘額表的日期當TWSE兩平台查詢基準（核心資料，
     # 各dataset正常應同一交易日；若當天TaiwanDailyShortSaleBalances缺，退用最新日期）。
     lend_date = d_short or latest
-    # r_price（daytrading用）可能是不同日期，借券tab的金額換算要用同一天收盤價，另抓一次
-    r_price_lend = api_get("TaiwanStockPrice", start_date=lend_date, end_date=lend_date) if lend_date else []
+    # r_price（daytrading用）可能是不同日期，借券tab的金額換算要用同一天收盤價；
+    # 日期相同（常態）直接重用，省一次全市場查詢
+    r_price_lend = (r_price if lend_date == d_dt
+                    else api_get("TaiwanStockPrice", start_date=lend_date, end_date=lend_date)) if lend_date else []
     # 借券tab混合多個dataset，若日期沒對齊會把不同天的資料錯配在同一列——只記警告不中斷，
     # 因為單日落後在同一批交易日內通常仍可用（比完全不出資料好），但要能被發現排查。
     mismatch = [{"name": n, "date": d} for n, d in (
@@ -547,7 +535,7 @@ def main() -> None:
               f"{[m['name'] for m in mismatch]} 使用了不同日期的資料", flush=True)
     out = {
         "date": latest,
-        "generated_at": dt.datetime.now(dt.timezone(dt.timedelta(hours=8))).isoformat(timespec="seconds"),
+        "generated_at": dt.datetime.now(TAIPEI).isoformat(timespec="seconds"),
         # 借券tab多dataset日期落後偵測（P5）：非空＝有dataset落後於基準lend_date，前端頁首顯示徽章
         "date_mismatch": mismatch,
         "margin": build_margin(d_margin, r_margin, nm),

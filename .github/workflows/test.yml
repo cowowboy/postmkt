@@ -1,0 +1,41 @@
+name: tests
+
+# 離線單元測試（無 token/網路需求）：日期閘門、聚合純函式、fmclient 重試、
+# lending 瘦身欄位形狀。只在 Python/測試相關檔變動時觸發，bot 資料 commit 不會跑。
+on:
+  push:
+    paths:
+      - "**.py"
+      - "tests/**"
+      - "requirements.txt"
+      - ".github/workflows/test.yml"
+  pull_request:
+    paths:
+      - "**.py"
+      - "tests/**"
+      - "requirements.txt"
+      - ".github/workflows/test.yml"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: tests-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install deps
+        run: pip install -r requirements.txt pytest
+
+      - name: Run tests
+        run: python -m pytest tests/ -q

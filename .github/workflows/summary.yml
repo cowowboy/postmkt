@@ -19,6 +19,7 @@ on:
 
 permissions:
   contents: write
+  issues: write   # 失敗通知開 issue 用
 
 concurrency:
   group: build-summary
@@ -36,7 +37,7 @@ jobs:
           python-version: "3.12"
 
       - name: Install deps
-        run: pip install requests
+        run: pip install -r requirements.txt
 
       - name: Decide slot
         id: slot
@@ -62,21 +63,15 @@ jobs:
         run: python build_summary.py --slot ${{ steps.slot.outputs.slot }}
 
       - name: Commit and push
-        run: |
-          git config user.name "github-actions[bot]"
-          git config user.email "github-actions[bot]@users.noreply.github.com"
-          # 目錄可能不存在（skip 場次、或尚無任何產出）→ 容錯；-A 才會把
-          # 清理段刪除的 data/analyses/ 過期檔一併 stage 成刪除
-          git add -A data/summary 2>/dev/null || true
-          git add -A data/analyses 2>/dev/null || true
-          if git diff --cached --quiet; then
-            echo "no changes"
-            exit 0
-          fi
-          git commit -m "data: summary ${{ steps.slot.outputs.slot }} $(date -u +%Y-%m-%dT%H:%MZ)"
-          pushed=0
-          for i in 1 2 3 4 5; do
-            if git pull --rebase origin main && git push; then pushed=1; break; fi
-            sleep 4
-          done
-          if [ "$pushed" != "1" ]; then echo "::error::push failed after 5 retries"; exit 1; fi
+        uses: ./.github/actions/commit-data
+        with:
+          # add_all：清理段刪除的 data/analyses/ 過期檔要一併 stage 成刪除；目錄可能不存在（skip 場次）→ 容錯
+          paths: data/summary data/analyses
+          message: "data: summary ${{ steps.slot.outputs.slot }}"
+          add_all: "true"
+
+      - name: Notify failure
+        if: failure()
+        uses: ./.github/actions/notify-failure
+        with:
+          pipeline: summary

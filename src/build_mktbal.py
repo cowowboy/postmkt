@@ -69,15 +69,12 @@ from __future__ import annotations
 import argparse
 import json
 import logging
-import os
-import sys
-import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timedelta
 from pathlib import Path
 
-import requests
+from fmclient import TAIPEI, api_get, token  # noqa: E402 — 同目錄共用模組
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 logger = logging.getLogger("build_mktbal")
@@ -85,18 +82,9 @@ logger = logging.getLogger("build_mktbal")
 ROOT = Path(__file__).resolve().parent.parent
 OUT_PATH = ROOT / "data" / "market_balance_history.json"
 
-TPE = timezone(timedelta(hours=8))
-FINMIND_BASE = "https://api.finmindtrade.com/api/v4/data"
+TPE = TAIPEI  # 沿用本檔既有名稱
 TWT72U_URL = "https://www.twse.com.tw/rwd/zh/lending/TWT72U"
 TWTA1U_URL = "https://www.twse.com.tw/rwd/zh/marginTrading/TWTA1U"
-TWSE_HEADERS = {
-    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
-                  "(KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
-    "Accept": "application/json, text/javascript, */*; q=0.01",
-    "Accept-Language": "zh-TW,zh;q=0.9,en;q=0.8",
-    "Referer": "https://www.twse.com.tw/zh/",
-    "X-Requested-With": "XMLHttpRequest",
-}
 
 RECENT_DAILY_KEEP = 30
 MONTHLY_KEEP = 36
@@ -104,32 +92,11 @@ BACKFILL_YEARS = 3
 UNRESTRICTED_CATEGORIES = ["X", "A", "F", "G", "B", "I"]  # TWTA1U selectType 全 6 類
 UNRESTRICTED_GROUP_TITLE = "證券商不限用途款項借貸"
 
-# ════════════════════════════════════════════════════════════════
-# TWSE 節流＋指數退避重試（根因：backfill 連續快速打 TWT72U/TWTA1U，約 6 次後被 IP 限流，
-# 回應變成非 JSON 空內容 → "Expecting value: line 1 column 1 (char 0)"。用全域鎖把所有
-# TWSE 實際 HTTP 呼叫序列化，兩次呼叫間至少間隔 TWSE_THROTTLE_SECONDS 秒；遇到限流/空回應
-# 時指數退避重試而非只重試一次。）
-# ════════════════════════════════════════════════════════════════
-TWSE_THROTTLE_SECONDS = float(os.environ.get("MKTBAL_TWSE_THROTTLE", "4"))
-TWSE_RETRY_BACKOFFS = [2, 5, 10, 20]  # 秒；暫時性錯誤（含空回應）的重試等待序列
-_twse_lock = threading.Lock()
-_twse_last_request_ts = [0.0]
-
-
-def _twse_throttled_get(url: str, params: dict, timeout: int) -> requests.Response:
-    """所有 TWSE 請求都經過這裡，用全域鎖序列化＋節流，避免併發/連發觸發 IP 限流。"""
-    with _twse_lock:
-        wait = TWSE_THROTTLE_SECONDS - (time.monotonic() - _twse_last_request_ts[0])
-        if wait > 0:
-            time.sleep(wait)
-        try:
-            return requests.get(url, params=params, timeout=timeout, headers=TWSE_HEADERS)
-        finally:
-            _twse_last_request_ts[0] = time.monotonic()
-
-
-def token() -> str:
-    return os.environ.get("FINMIND_TOKEN", "").strip()
+# TWSE 節流＋指數退避重試：節流鎖 2026-07-24 抽到 twseclient.py（與 build_postmkt 共用），
+# 退避迴圈仍在本檔各 fetcher（遇限流/空回應依 TWSE_RETRY_BACKOFFS 重試而非只一次）。
+from twseclient import RETRY_BACKOFFS as TWSE_RETRY_BACKOFFS  # noqa: E402
+from twseclient import resolve_cols  # noqa: E402
+from twseclient import throttled_get as _twse_throttled_get  # noqa: E402
 
 
 def parse_num(s) -> int | None:
@@ -149,40 +116,30 @@ def parse_num(s) -> int | None:
 # ════════════════════════════════════════════════════════════════
 
 def fm_margin_range(start_date: str, end_date: str) -> dict[str, dict]:
-    """回傳 {date: {margin_shares, margin_money, short_shares}}。單次查詢整段區間。"""
-    tok = token()
-    if not tok:
+    """回傳 {date: {margin_shares, margin_money, short_shares}}。單次查詢整段區間。
+    失敗吞掉回 {}（FinMind 兩項該日填 null 的降級語意，重試已在 fmclient.api_get）。"""
+    if not token():
         logger.warning("無 FINMIND_TOKEN，略過 FinMind 融資融券查詢")
         return {}
-    for attempt in range(2):
-        try:
-            r = requests.get(FINMIND_BASE, params={
-                "dataset": "TaiwanStockTotalMarginPurchaseShortSale",
-                "start_date": start_date, "end_date": end_date, "token": tok,
-            }, timeout=60)
-            r.raise_for_status()
-            j = r.json()
-            if j.get("status") not in (200, None):
-                raise RuntimeError(j.get("msg"))
-            rows = j.get("data") or []
-            out: dict[str, dict] = {}
-            for row in rows:
-                d = row.get("date")
-                name = row.get("name")
-                rec = out.setdefault(d, {"margin_shares": None, "margin_money": None, "short_shares": None})
-                if name == "MarginPurchase":
-                    rec["margin_shares"] = row.get("TodayBalance")
-                elif name == "MarginPurchaseMoney":
-                    rec["margin_money"] = row.get("TodayBalance")
-                elif name == "ShortSale":
-                    rec["short_shares"] = row.get("TodayBalance")
-            logger.info(f"FinMind 融資融券 {start_date}~{end_date}：{len(out)} 交易日")
-            return out
-        except Exception as e:
-            logger.warning(f"FinMind 融資融券查詢失敗（第{attempt+1}次）：{e}")
-            if attempt == 0:
-                time.sleep(5)
-    return {}
+    try:
+        rows = api_get("TaiwanStockTotalMarginPurchaseShortSale",
+                       start_date=start_date, end_date=end_date)
+    except Exception as e:
+        logger.warning(f"FinMind 融資融券查詢失敗：{e}")
+        return {}
+    out: dict[str, dict] = {}
+    for row in rows:
+        d = row.get("date")
+        name = row.get("name")
+        rec = out.setdefault(d, {"margin_shares": None, "margin_money": None, "short_shares": None})
+        if name == "MarginPurchase":
+            rec["margin_shares"] = row.get("TodayBalance")
+        elif name == "MarginPurchaseMoney":
+            rec["margin_money"] = row.get("TodayBalance")
+        elif name == "ShortSale":
+            rec["short_shares"] = row.get("TodayBalance")
+    logger.info(f"FinMind 融資融券 {start_date}~{end_date}：{len(out)} 交易日")
+    return out
 
 
 # ════════════════════════════════════════════════════════════════
@@ -201,10 +158,17 @@ def _fetch_twt72u_total(date_iso: str, select_type: str) -> tuple[int, int] | No
             j = r.json()
             if j.get("stat") != "OK":
                 return None  # 非交易日/無資料（正常回應，非限流，不重試）
+            # 欄位定位吃 fields metadata（TWSE 改欄位順序不再靜默錯值），fallback＝固定 5/7
+            cols = resolve_cols(j, {
+                "bal": (5, ("餘額",), ("前日", "市值")),
+                "mv":  (7, ("市值",), ()),
+            })
             for row in j.get("data") or []:
                 if row and row[0] == "合計" and row[-1] == "整體市場":
-                    shares = parse_num(row[5])
-                    value = parse_num(row[7])
+                    if len(row) <= max(cols.values()):
+                        return None
+                    shares = parse_num(row[cols["bal"]])
+                    value = parse_num(row[cols["mv"]])
                     if shares is None or value is None:
                         return None
                     return shares, value
