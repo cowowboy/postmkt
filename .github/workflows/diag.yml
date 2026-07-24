@@ -38,7 +38,7 @@ jobs:
       # （每晚一個 blob 是 repo 膨脹最大源）。restore-keys 前綴比對＝拿最近一次的快取；
       # 快取被 GitHub 淘汰（7 天未用/總量滿）時 build_diag.py 會自動全量重建，只是該晚 API 呼叫較多
       - name: Restore diag cache
-        uses: actions/cache/restore@v4
+        uses: actions/cache/restore@v6
         with:
           path: data/diag/cache.json
           key: diag-cache-${{ github.run_id }}
@@ -51,7 +51,7 @@ jobs:
         run: python src/build_diag.py
 
       - name: Save diag cache
-        uses: actions/cache/save@v4
+        uses: actions/cache/save@v6
         with:
           path: data/diag/cache.json
           key: diag-cache-${{ github.run_id }}
