@@ -16,7 +16,7 @@
 | 零股 | TWSE `TWTC7U`（盤中）/`TWT53U`（盤後），公開端點免金鑰 | 盤中/盤後兩子標籤，個股成交股數/筆數/金額 |
 | 分點 | FinMind `TaiwanSecuritiesTraderInfo`＋`TradingDailyReport` 專屬 endpoint | 單點（查分點進出個股）/個股（查個股進出分點）/清單（1010 分點模糊查找） |
 | 大盤餘額 | FinMind `TaiwanStockTotalMarginPurchaseShortSale`（融資/融券）＋ TWSE `TWT72U`（借券賣出，SLB+NLB整體市場相加）＋ TWSE `TWTA1U`（不限用途借貸，6 selectType加總） | 全市場層級四項餘額合計（融資/融券/借券賣出/不限用途款項借貸），4 pill 切換，近5日逐日＋近3年各月底（年列可展開），與「融借券」tab（個股排行）明確區分定位 |
-| 日期 | 即時 fetch 八個資料源的 date/generated_at | 全專案資料日期總覽：各源資料日/產出時間(台北,到分)/新鮮度狀態（最新/落後N日），一眼看清哪些資料到今天 |
+| 日期 | 即時 fetch 八個資料源的 date/generated_at | 全專案資料日期總覽：各源資料日/產出時間(台北,到分)/新鮮度狀態（最新/落後N個交易日，僅排除週末、國定假日不扣），一眼看清哪些資料到今天 |
 | 持股診斷 | `data/diag/diag.json`（`src/build_diag.py` 夜間管線）＋ v2 `/live` 現價＋ taiwan-stock-news 新聞 | 輸入持股（僅存 localStorage）→ 逐檔五面向（籌碼/價量/題材/基本面/系統）紅黃綠燈號＋事實清單＋組合層檢查＋近3日新聞命中＋可選 AI 解讀 |
 
 原「融資」「融券借券賣出餘額」兩 tab 於 2026-07-11 併入「融資券借券」整合排行（該 tab 為個股層級排行）；
@@ -119,7 +119,9 @@
 
 - **資料流**：`src/build_diag.py`（`.github/workflows/diag.yml`，平日台北 22:10、排在
   build.yml 21:53 後）→ `data/diag/diag.json`（全市場日均成交值前 1200 檔，<2.5MB）＋
-  `data/diag/cache.json`（增量快取）。來源：FinMind 價量/法人/融資/借券/千張大戶/月營收/
+  `data/diag/cache.json`（增量快取；2026-07-24 起不進 git、改由 diag.yml 以
+  actions/cache 跨 run 保存——快取被淘汰時管線自動全量重建，只是該晚 API 呼叫較多）。
+  來源：FinMind 價量/法人/融資/借券/千張大戶/月營收/
   PER/股利公告（token 走 Actions secret；千張大戶與 PER3年百分位/除權息只能單檔查，
   採每晚上限輪替刷新 `HOLD_CAP`/`VAL_CAP`）＋ TWSE/TPEx 處置注意 OpenAPI（免金鑰；
   TPEx 站憑證缺 SKI 需 `verify=False`）＋ v2 raw（classify/morning/us）＋本站 postmkt.json

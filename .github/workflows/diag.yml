@@ -14,6 +14,7 @@ on:
 
 permissions:
   contents: write
+  issues: write   # 失敗通知開 issue 用
 
 concurrency:
   group: build-diag
@@ -22,6 +23,7 @@ concurrency:
 jobs:
   build:
     runs-on: ubuntu-latest
+    timeout-minutes: 60
     steps:
       - uses: actions/checkout@v4
 
@@ -32,10 +34,27 @@ jobs:
       - name: Install deps
         run: pip install -r requirements.txt
 
+      # cache.json（~3MB 增量快取）2026-07-24 起改走 actions/cache、不再 commit 進 git
+      # （每晚一個 blob 是 repo 膨脹最大源）。restore-keys 前綴比對＝拿最近一次的快取；
+      # 快取被 GitHub 淘汰（7 天未用/總量滿）時 build_diag.py 會自動全量重建，只是該晚 API 呼叫較多
+      - name: Restore diag cache
+        uses: actions/cache/restore@v4
+        with:
+          path: data/diag/cache.json
+          key: diag-cache-${{ github.run_id }}
+          restore-keys: |
+            diag-cache-
+
       - name: Build diag.json
         env:
           FINMIND_TOKEN: ${{ secrets.FINMIND_TOKEN }}
         run: python src/build_diag.py
+
+      - name: Save diag cache
+        uses: actions/cache/save@v4
+        with:
+          path: data/diag/cache.json
+          key: diag-cache-${{ github.run_id }}
 
       - name: Commit and push
         run: |
@@ -53,3 +72,18 @@ jobs:
             sleep 4
           done
           if [ "$pushed" != "1" ]; then echo "::error::push failed after 5 retries"; exit 1; fi
+
+      # 失敗告警：同日同管線只開一張 issue，重複失敗改留言（避免 issue 洪水）
+      - name: Notify failure
+        if: failure()
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          title="pipeline 失敗：diag $(TZ=Asia/Taipei date +%F)"
+          n=$(gh issue list --state open --search "in:title \"$title\"" --json number --jq '.[0].number // empty')
+          if [ -n "$n" ]; then
+            gh issue comment "$n" --body "再次失敗：$RUN_URL"
+          else
+            gh issue create --title "$title" --body "失敗 run：$RUN_URL"
+          fi

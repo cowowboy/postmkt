@@ -226,7 +226,7 @@ const SUBS = {
   block:"當日鉅額交易逐筆列表，同股票分組並附總張數/總金額；買方/賣方券商分點為盡力比對（同股同價當日多筆時可能無法唯一判定，顯示—）。類型僅「配對交易／逐筆交易」兩種，FinMind未提供單一/組合證券的區分欄位。",
   oddlot:"零股交易行情（TWSE公開端點）：盤中零股／盤後零股，依個股呈現成交股數、筆數、金額。單位：股／元。",
   broker:"券商分點進出（FinMind TradingDailyReport，每交易日約21:00更新）。單點＝查一個分點當日全部進出個股；個股＝查一檔股票當日全部進出分點；清單＝全部分點代號對照。",
-  mktbal:"大盤層級籌碼餘額：融資餘額／融券餘額／借券賣出餘額／不限用途款項借貸餘額，四項皆為全市場合計，非個股加總排行——個股層級請見「融借券」tab。融資融券源自FinMind，借券賣出／不限用途借貸源自TWSE公開端點。近30交易日逐日＋近3年各月底（年列可展開）。",
+  mktbal:"大盤層級籌碼餘額：融資餘額（源自FinMind）／借券賣出餘額（源自TWSE公開端點）兩項全市場合計金額，非個股加總排行——個股層級請見「融借券」tab；融券與不限用途款項借貸因官方無金額統計不列。近30交易日逐日＋近3年各月底（年列可展開）。",
   dates:"各資料源目前的資料日與產出時間；判斷哪些已是最新交易日、哪些尚未更新。資料為排程產出，當日盤後資料通常於當晚 21:00 後才更新，故白天多半看到前一交易日。",
   diag:"持股診斷：輸入持股後逐檔彙整籌碼／價量／題材／基本面／系統五面向事實與紅黃綠風險燈號，附近3日新聞命中與可選的 AI 解讀（按了才呼叫、token 自備）。證據彙整工具、非投資建議，不輸出買賣指令；持股資料僅存於本機瀏覽器（localStorage），不上傳任何伺服器。素材庫每交易日約 22:10 更新（全市場通用資料）。",
 };
@@ -243,9 +243,9 @@ const state = { tab:"insight", openEtf:null, openSub:null, openLend:null, lendQu
   summary:null, summaryLoading:false, summaryErr:null, summaryProg:"", summaryAbort:null,
   sumAutoIdx:undefined, sumAutoOpen:null, sumManualOpen:null, cloudOpen:null,
   datesData:null, datesLoading:false,
-  diag:null, diagErr:null, diagLive:undefined, diagOpen:null, diagRulesOpen:false, diagMsg:"",
+  diag:null, diagErr:null, diagLoading:false, diagLive:undefined, diagOpen:null, diagRulesOpen:false, diagMsg:"",
   diagNews:undefined, diagAI:null,
-  mktbal:null, mktbalErr:null, mktbalSel:"margin", mktbalOpen:{} };
+  mktbal:null, mktbalErr:null, mktbalLoading:false, mktbalSel:"margin", mktbalOpen:{} };
 
 const esc = s => String(s==null?"":s).replace(/[&<>"']/g,
   c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
@@ -988,8 +988,8 @@ function render(){
   renderStats();
   if (state.tab === "dates") renderDates();
   else if (state.tab === "aetf") renderAETF();
-  else if (state.tab === "mktbal") renderMktbal();
-  else renderPM();
+  else if (state.tab === "mktbal"){ ensureMktbal(); renderMktbal(); }
+  else { if (state.tab === "diag") ensureDiag(); renderPM(); }
 }
 function renderTabs(){
   document.getElementById("tabs").innerHTML = TABS.map(([k,label])=>
@@ -1002,8 +1002,17 @@ function renderTabs(){
 const dateNorm = s => { const t = String(s||"").replace(/\//g,"-").slice(0,10); return /^\d{4}-\d{2}-\d{2}$/.test(t) ? t : ""; };
 // 顯示用：帶時刻的來源(如即時類股 ts)顯示到 HH:MM(台北)，純交易日的維持日期
 const dateDisplay = raw => { const m = String(raw||"").replace(/\//g,"-").trim().match(/^(\d{4}-\d{2}-\d{2})(?:[ T](\d{2}:\d{2}))?/); return m ? (m[2] ? `${m[1]} ${m[2]}` : m[1]) : ""; };
-// baseline 早於 date 幾個日曆日（正值＝該源落後 baseline N 日）
-const dayDiff = (b,d) => Math.round((Date.parse(b+"T00:00:00Z") - Date.parse(d+"T00:00:00Z")) / 86400000);
+// baseline 早於 date 幾個「平日」（正值＝該源落後 baseline N 個交易日）。
+// 只排除週六日，國定假日/颱風假不扣——跨假日仍可能高估 1-2 日，屬已知近似
+const dayDiff = (b,d) => {
+  const DAY = 86400000, end = Date.parse(b+"T00:00:00Z");
+  let n = 0;
+  for (let t = Date.parse(d+"T00:00:00Z") + DAY; t <= end; t += DAY){
+    const w = new Date(t).getUTCDay();
+    if (w !== 0 && w !== 6) n++;
+  }
+  return n;
+};
 // 狀態判定：以最新台股交易日(baseline)為基準。美股/新聞屬不同市場/含當日，標註避免誤判落後。
 function dateStatus(dateStr, baseline, kind, err){
   if (err) return { txt:"讀取失敗", cls:"dt-mut" };
@@ -1013,7 +1022,7 @@ function dateStatus(dateStr, baseline, kind, err){
   if (!nb) return { txt:"—", cls:"dt-mut" };
   const diff = dayDiff(nb, nd);
   if (diff <= 0) return { txt: kind === "live" ? "最新（即時）" : "最新", cls:"dt-ok" };
-  return { txt: `落後 ${diff} 日${kind === "news" ? "（含當日）" : ""}`, cls:"dt-lag" };
+  return { txt: `落後 ${diff} 個交易日${kind === "news" ? "（含當日）" : ""}`, cls:"dt-lag" };
 }
 // 併發抓所有資料源的日期，單一源失敗只標該列「讀取失敗」不中斷其他（Promise.allSettled）
 async function fetchDates(){
@@ -2588,19 +2597,25 @@ async function load(){
   const pTf = (async ()=>{
     try{ state.tf = await loadJSON(TF_BASE+"/latest.json?t="+t); }catch(e){}
   })();
-  // 持股診斷素材庫（本 repo data/diag/，夜間管線產出）：失敗只影響診斷 tab 燈號
-  const pDiag = (async ()=>{
-    try{ state.diag = await loadJSON("data/diag/diag.json?t="+t); }
-    catch(e){ state.diagErr = e; }
-  })();
-  // 大盤餘額（本 repo data/market_balance_history.json，src/build_mktbal.py 產出）
-  const pMktbal = (async ()=>{
-    try{ state.mktbal = await loadJSON("data/market_balance_history.json?t="+t); }
-    catch(e){ state.mktbalErr = e; }
-  })();
-  pAetf.then(render); pPm.then(render); pTf.then(render); pDiag.then(render); pMktbal.then(render);
-  await Promise.all([pAetf, pPm, pTf, pDiag, pMktbal]);
+  pAetf.then(render); pPm.then(render); pTf.then(render);
+  await Promise.all([pAetf, pPm, pTf]);
   render();
+}
+// 懶載（不在 load() 首屏抓）：diag.json(~2.5MB) 與 market_balance_history.json 只有
+// 該 tab 用到，切入時才抓，首屏傳輸量約砍半；render() 分派時觸發，重入以 *Loading 防抖
+function ensureDiag(){
+  if (state.diag || state.diagErr || state.diagLoading) return;
+  state.diagLoading = true;
+  loadJSON("data/diag/diag.json?t="+Date.now())
+    .then(j=>{ state.diag = j; }).catch(e=>{ state.diagErr = e; })
+    .finally(()=>{ state.diagLoading = false; if (state.tab === "diag") render(); });
+}
+function ensureMktbal(){
+  if (state.mktbal || state.mktbalErr || state.mktbalLoading) return;
+  state.mktbalLoading = true;
+  loadJSON("data/market_balance_history.json?t="+Date.now())
+    .then(j=>{ state.mktbal = j; }).catch(e=>{ state.mktbalErr = e; })
+    .finally(()=>{ state.mktbalLoading = false; if (state.tab === "mktbal") render(); });
 }
 load();
 </script>

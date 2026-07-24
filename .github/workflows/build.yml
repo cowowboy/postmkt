@@ -14,6 +14,7 @@ on:
 
 permissions:
   contents: write
+  issues: write   # 失敗通知開 issue 用
 
 concurrency:
   group: build-postmkt
@@ -22,6 +23,7 @@ concurrency:
 jobs:
   build:
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
 
@@ -53,3 +55,18 @@ jobs:
             sleep 4
           done
           if [ "$pushed" != "1" ]; then echo "::error::push failed after 5 retries"; exit 1; fi
+
+      # 失敗告警：同日同管線只開一張 issue，重複失敗改留言（避免 issue 洪水）
+      - name: Notify failure
+        if: failure()
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          title="pipeline 失敗：postmkt $(TZ=Asia/Taipei date +%F)"
+          n=$(gh issue list --state open --search "in:title \"$title\"" --json number --jq '.[0].number // empty')
+          if [ -n "$n" ]; then
+            gh issue comment "$n" --body "再次失敗：$RUN_URL"
+          else
+            gh issue create --title "$title" --body "失敗 run：$RUN_URL"
+          fi
