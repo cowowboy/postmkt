@@ -30,7 +30,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 240  # 涵蓋最長輪詢（pm 硬等 170 分；am 硬等 150＋軟等 60 分）＋API 呼叫時間
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - uses: actions/setup-python@v7
         with:
