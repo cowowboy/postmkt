@@ -63,7 +63,9 @@ jobs:
           message: "data: diag"
 
       - name: Notify failure
-        if: failure()
+        # cancelled 也要告警：跑一半被取消（GitHub 端異常或誤按）同樣代表該場沒產出，
+        # 而 failure() 在 cancelled 時不成立（2026-07-24 pm 場靜默消失的教訓）
+        if: failure() || cancelled()
         uses: ./.github/actions/notify-failure
         with:
           pipeline: diag
