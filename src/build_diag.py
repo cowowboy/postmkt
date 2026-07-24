@@ -43,8 +43,9 @@ try:  # Windows 本地終端 cp950 會把中文 print 成亂碼/報錯；Actions
 except Exception:
     pass
 
+from fmclient import api_get, taipei_today, token  # noqa: E402 — 同目錄共用模組
+
 ROOT = Path(__file__).resolve().parent.parent  # repo 根（本檔在 src/ 下）
-BASE = "https://api.finmindtrade.com/api/v4/data"
 V2_RAW = "https://raw.githubusercontent.com/shihpc/taiwan-flow-live-v2/main/data"
 
 OUT_PATH = ROOT / "data" / "diag" / "diag.json"
@@ -65,37 +66,6 @@ VAL_STALE_DAYS = 14    # 估值/除權息超過 N 天沒查過才重查
 SAMPLE_CODES = ["2330", "2317", "2603", "3231"]
 
 
-def token() -> str:
-    return os.environ.get("FINMIND_TOKEN", "").strip()
-
-
-def api_get(dataset: str, **params) -> list:
-    """通用 /api/v4/data 查詢（同 build_postmkt.py 封裝）。失敗重試一次；
-    遇 402/429 限流先等 65 秒再重試。二次仍失敗 -> raise（由呼叫端決定要不要吞）。"""
-    q = dict(params, dataset=dataset)
-    t = token()
-    if t:
-        q["token"] = t
-    last = None
-    for attempt in (1, 2):
-        try:
-            r = requests.get(BASE, params=q, timeout=60)
-            if r.status_code in (402, 429):
-                raise RuntimeError(f"{dataset}: rate limited (HTTP {r.status_code})")
-            r.raise_for_status()
-            j = r.json()
-            if j.get("status") not in (200, None):
-                raise RuntimeError(f"{dataset}: {j.get('msg')}")
-            return j.get("data") or []
-        except Exception as e:  # noqa: BLE001 — 統一重試
-            last = e
-            if attempt == 1:
-                wait = 65 if "rate limited" in str(e) else 3
-                print(f"  ! {dataset} 失敗（{e}），{wait}s 後重試一次")
-                time.sleep(wait)
-    raise RuntimeError(f"{dataset}: 重試後仍失敗: {last}")
-
-
 def get_raw(url: str):
     """跨 repo raw JSON（無金鑰）。失敗重試一次，仍失敗回 None（欄位標 null）。"""
     for attempt in (1, 2):
@@ -109,10 +79,6 @@ def get_raw(url: str):
                 time.sleep(3)
     print(f"  ! {url} 二次失敗，相關欄位標 null")
     return None
-
-
-def taipei_today() -> dt.date:
-    return (dt.datetime.now(dt.timezone.utc) + dt.timedelta(hours=8)).date()
 
 
 def r2(v):

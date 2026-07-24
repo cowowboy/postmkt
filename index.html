@@ -1475,22 +1475,9 @@ async function runInsight(){
     const g = insightGatherContext();
     if (!g.text.trim()) throw new Error("本頁資料尚未載入完成，請稍候再試");
     const bk = await insightFetchBrokers(g.primary);
-    const SYS = "你是積極的台股盤後籌碼策略分析師。任務：彙整本頁各 tab 資料，產出以「找出 alpha 標的」為核心的洞見與可操作建議。"
-      + "要求："
-      + "(1) 進出建議一律以『同向共振』為基礎——多個資料源指向同一方向才算有效訊號（例：主動ETF加碼＋鉅額買盤同向＋外資買超同一檔＝法人共識偏多；或多源同步偏空）。"
-      + "(2) 只聚焦『同向共振』訊號；『背離』（多源方向不一致，如借券賣出大增但外資買超）不適合作為進出參考，本分析一律略過、無須呈現與描述——不要列出背離標的、不要有背離相關段落。"
-      + "(3) 依據資料呈現的歷史統計傾向做方向性判斷：對『同向共振』的標的可預測後續傾向、給偏多／偏空看法與明確進出建議。"
-      + "(4) 每一條洞見／建議都必須點名個股代號＋可追溯的具體數據依據，禁止空泛或無數據支撐的臆測。"
-      + "(5) 洞見與建議合計不超過 10 條，挑同向共振最強、依據最紮實的。"
-      + "(6) 建議個股以 alpha 為首要考量，優先納入中小型標的；大型權值股（如台灣50成分、2330台積電、2317鴻海、2454聯發科、金控股等）合計『不得超過』清單一半——這是上限而非目標，不必硬湊到接近一半，若中小型訊號更強就多放中小型、大型股少放甚至不放。"
-      + "(7) 推薦個股必須有『當日成交量 ≥ 1,000 張』的量能佐證，量能只能引自資料中有標示成交量的段落（如當沖排行的量、鉅額的總量、個股資金集中的量）；若該標的在所有帶量段落都查不到成交量，視為量能未知，一律不得列入推薦。"
-      + "(8) 指定分點進出僅供『輔助』參考、權重應調低：部分分點以隔日沖／當沖為主，當日大買未必代表中長期看多，容易誤導，故分點不可單獨作為進出依據，只在與其他資料源同向時才納入共振判斷。"
-      + "(9) 日期對齊：各段已標注資料日，若某段標注『與主資料日不同』，該段資料只能單獨解讀，嚴禁跨不同交易日直接比較或串連成訊號。"
-      + "(10) 繁體中文、markdown（## 標題、- 清單、**粗體**、可用表格）。"
-      + "結構：## 核心洞見與操作建議（≤10 條，每條格式＝個股代號名稱 ｜ 共振訊號 ｜ 數據依據 ｜ 方向與進出建議；大型股≤一半）／## 訊號邏輯（簡述同向共振推論）。不要有背離段落。"
-      + "最後一行附免責：以上為當日籌碼結構的模型即時研判、未經歷史回測、非保證獲利，僅供你自行參考。";
+    // 盤後 SYS 唯一事實來源＝SUM_SYS_POSTMKT（原本此處有逐字複本，2026-07-24 去重）
     const USER = `主資料日（以此為準）：${g.primary}\n各段資料日：${JSON.stringify(g.dates)}\n（凡標注「與主資料日不同」的段落，僅可單獨解讀，勿跨日比較）\n\n${g.text}\n\n${bk.text}`;
-    const res = await callClaude(anthKey(), state.insightModel, SYS, USER, state.insightAbort.signal);
+    const res = await callClaude(anthKey(), state.insightModel, SUM_SYS_POSTMKT, USER, state.insightAbort.signal);
     state.insight = { text: res.text, usage: res.usage, at: twNow(), date: g.primary, model: state.insightModel };
     saveAnalysisCloud(state.insight, "insight-postmkt",
       { at: state.insight.at, model: state.insight.model, text: state.insight.text, usage: state.insight.usage, date: state.insight.date },
@@ -1575,8 +1562,9 @@ const SUM_NEWS_URL = "https://raw.githubusercontent.com/shihpc/taiwan-stock-news
 const SUM_MODELS = ["claude-sonnet-5","claude-sonnet-5"];
 // v2 live.stocks 陣列欄位後備（live.stock_cols 缺時用；與 v2 前端 SC 同步）
 const SUM_SC = ["chg","amt","close","vol","bv","sv","pts","dp","lim","lw","f10","c10","c30","r10","it","fi","y1","y2","ints","nl"];
-// 三站 SYS 原文（單一事實來源＝各站 runInsight；本頁盤後 SYS 因 runInsight 內為區域常數、
-// 不改動既有函式故複製一份，改動時需與 runInsight 內原文同步）
+// 三站 SYS 原文。本站盤後 SYS 唯一事實來源＝下方 SUM_SYS_POSTMKT（runInsight 直接引用，
+// 2026-07-24 去重）；LIVE/NEWS 兩份的事實來源仍在各自站的 runInsight。
+// 注意：build_summary.py 的 SYS_POSTMKT 是本常數的移植複本（Python 無法讀 JS），改動時需同步該處。
 const SUM_SYS_POSTMKT = "你是積極的台股盤後籌碼策略分析師。任務：彙整本頁各 tab 資料，產出以「找出 alpha 標的」為核心的洞見與可操作建議。"
   + "要求："
   + "(1) 進出建議一律以『同向共振』為基礎——多個資料源指向同一方向才算有效訊號（例：主動ETF加碼＋鉅額買盤同向＋外資買超同一檔＝法人共識偏多；或多源同步偏空）。"

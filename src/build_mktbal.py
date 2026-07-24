@@ -74,10 +74,12 @@ import sys
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timedelta
 from pathlib import Path
 
 import requests
+
+from fmclient import TAIPEI, api_get, token  # noqa: E402 — 同目錄共用模組
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 logger = logging.getLogger("build_mktbal")
@@ -85,8 +87,7 @@ logger = logging.getLogger("build_mktbal")
 ROOT = Path(__file__).resolve().parent.parent
 OUT_PATH = ROOT / "data" / "market_balance_history.json"
 
-TPE = timezone(timedelta(hours=8))
-FINMIND_BASE = "https://api.finmindtrade.com/api/v4/data"
+TPE = TAIPEI  # 沿用本檔既有名稱
 TWT72U_URL = "https://www.twse.com.tw/rwd/zh/lending/TWT72U"
 TWTA1U_URL = "https://www.twse.com.tw/rwd/zh/marginTrading/TWTA1U"
 TWSE_HEADERS = {
@@ -128,10 +129,6 @@ def _twse_throttled_get(url: str, params: dict, timeout: int) -> requests.Respon
             _twse_last_request_ts[0] = time.monotonic()
 
 
-def token() -> str:
-    return os.environ.get("FINMIND_TOKEN", "").strip()
-
-
 def parse_num(s) -> int | None:
     if s is None:
         return None
@@ -149,40 +146,30 @@ def parse_num(s) -> int | None:
 # ════════════════════════════════════════════════════════════════
 
 def fm_margin_range(start_date: str, end_date: str) -> dict[str, dict]:
-    """回傳 {date: {margin_shares, margin_money, short_shares}}。單次查詢整段區間。"""
-    tok = token()
-    if not tok:
+    """回傳 {date: {margin_shares, margin_money, short_shares}}。單次查詢整段區間。
+    失敗吞掉回 {}（FinMind 兩項該日填 null 的降級語意，重試已在 fmclient.api_get）。"""
+    if not token():
         logger.warning("無 FINMIND_TOKEN，略過 FinMind 融資融券查詢")
         return {}
-    for attempt in range(2):
-        try:
-            r = requests.get(FINMIND_BASE, params={
-                "dataset": "TaiwanStockTotalMarginPurchaseShortSale",
-                "start_date": start_date, "end_date": end_date, "token": tok,
-            }, timeout=60)
-            r.raise_for_status()
-            j = r.json()
-            if j.get("status") not in (200, None):
-                raise RuntimeError(j.get("msg"))
-            rows = j.get("data") or []
-            out: dict[str, dict] = {}
-            for row in rows:
-                d = row.get("date")
-                name = row.get("name")
-                rec = out.setdefault(d, {"margin_shares": None, "margin_money": None, "short_shares": None})
-                if name == "MarginPurchase":
-                    rec["margin_shares"] = row.get("TodayBalance")
-                elif name == "MarginPurchaseMoney":
-                    rec["margin_money"] = row.get("TodayBalance")
-                elif name == "ShortSale":
-                    rec["short_shares"] = row.get("TodayBalance")
-            logger.info(f"FinMind 融資融券 {start_date}~{end_date}：{len(out)} 交易日")
-            return out
-        except Exception as e:
-            logger.warning(f"FinMind 融資融券查詢失敗（第{attempt+1}次）：{e}")
-            if attempt == 0:
-                time.sleep(5)
-    return {}
+    try:
+        rows = api_get("TaiwanStockTotalMarginPurchaseShortSale",
+                       start_date=start_date, end_date=end_date)
+    except Exception as e:
+        logger.warning(f"FinMind 融資融券查詢失敗：{e}")
+        return {}
+    out: dict[str, dict] = {}
+    for row in rows:
+        d = row.get("date")
+        name = row.get("name")
+        rec = out.setdefault(d, {"margin_shares": None, "margin_money": None, "short_shares": None})
+        if name == "MarginPurchase":
+            rec["margin_shares"] = row.get("TodayBalance")
+        elif name == "MarginPurchaseMoney":
+            rec["margin_money"] = row.get("TodayBalance")
+        elif name == "ShortSale":
+            rec["short_shares"] = row.get("TodayBalance")
+    logger.info(f"FinMind 融資融券 {start_date}~{end_date}：{len(out)} 交易日")
+    return out
 
 
 # ════════════════════════════════════════════════════════════════

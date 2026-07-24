@@ -37,7 +37,7 @@ jobs:
           python-version: "3.12"
 
       - name: Install deps
-        run: pip install requests
+        run: pip install -r requirements.txt
 
       - name: Decide slot
         id: slot

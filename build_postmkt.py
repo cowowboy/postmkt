@@ -10,34 +10,17 @@ from __future__ import annotations
 
 import datetime as dt
 import json
-import os
 import sys
 from pathlib import Path
 
 import requests
 
 ROOT = Path(__file__).resolve().parent
-BASE = "https://api.finmindtrade.com/api/v4/data"
+sys.path.insert(0, str(ROOT / "src"))
+from fmclient import TAIPEI, api_get, token  # noqa: E402
+
 TOP_N = 50
 MAX_BACK_DAYS = 5
-
-
-def token() -> str:
-    t = os.environ.get("FINMIND_TOKEN", "").strip()
-    if not t:
-        raise RuntimeError("找不到環境變數 FINMIND_TOKEN")
-    return t
-
-
-def api_get(dataset: str, **params) -> list:
-    """通用 /api/v4/data 查詢（同 taiwan-flow-live-v2 的封裝寫法）。"""
-    params.update(dataset=dataset, token=token())
-    r = requests.get(BASE, params=params, timeout=60)
-    r.raise_for_status()
-    j = r.json()
-    if j.get("status") not in (200, None):
-        raise RuntimeError(f"{dataset}: {j.get('msg')}")
-    return j.get("data") or []
 
 
 def fetch_latest(dataset: str, base_date: dt.date) -> tuple[str, list]:
@@ -516,6 +499,7 @@ def build_blocktrade(date: str, rows: list, nm: dict) -> dict:
 
 
 def main() -> None:
+    token(required=True)  # 本管線 token 必要；缺就在開跑前失敗，不要抓到一半才炸
     today = dt.date.today()
     print("抓取 FinMind 盤後資料…")
     nm = stock_names()
@@ -547,7 +531,7 @@ def main() -> None:
               f"{[m['name'] for m in mismatch]} 使用了不同日期的資料", flush=True)
     out = {
         "date": latest,
-        "generated_at": dt.datetime.now(dt.timezone(dt.timedelta(hours=8))).isoformat(timespec="seconds"),
+        "generated_at": dt.datetime.now(TAIPEI).isoformat(timespec="seconds"),
         # 借券tab多dataset日期落後偵測（P5）：非空＝有dataset落後於基準lend_date，前端頁首顯示徽章
         "date_mismatch": mismatch,
         "margin": build_margin(d_margin, r_margin, nm),

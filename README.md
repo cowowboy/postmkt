@@ -24,6 +24,9 @@
 
 ## 架構
 
+- `src/fmclient.py`：四支 Python 管線共用的 FinMind client（api_get 統一重試：
+  402/429 限流等 65 秒、其他錯誤等 3 秒）＋ `token()`／台北時區工具（2026-07-24
+  抽出，原本四份實作重試策略互異、build_postmkt 甚至零重試）。
 - `build_postmkt.py`：抓 FinMind dataset＋TWSE 公開端點的最新交易日全市場資料，
   各 tab 預先聚合排序，輸出 `data/postmkt.json`（~2.4MB）。
   找不到最新交易日資料時自動往前回退最多 5 天；TWSE 端點失敗重試一次後降級（缺欄警示）。
