@@ -312,7 +312,7 @@ def gather_postmkt(pm: dict, aetf_latest, aetf_diff, tf) -> dict:
             parts.append(f"{dlabel('三大法人買賣超（盤後法人動態站）', tf.get('date'))}\n" + "\n".join(seg))
 
     # 融借券整合排行（依兩平台借券餘額；含放空/融資/當沖/三大法人）
-    lr = (d.get("lending") or {}).get("rows") or []
+    lr = _augment_lending((d.get("lending") or {}).get("rows") or [])
     if lr:
         def lend_line(r):
             usage = "—" if r.get("usage_ratio") is None else f"{r['usage_ratio']:.0f}"
@@ -361,6 +361,24 @@ def gather_postmkt(pm: dict, aetf_latest, aetf_diff, tf) -> dict:
                                  f" {num(r.get('deals'))}筆" for r in od[:15]))
 
     return {"text": "\n\n".join(parts), "primary": primary, "dates": dlabel.dates}
+
+
+def _augment_lending(rows: list) -> list:
+    """postmkt.json 瘦身（2026-07-24）後 lending.rows 只存基礎量＋px，衍生欄由消費端重建。
+    本函式只重建 gather_postmkt 消費的 5 欄（plat_total/plat_total_chg/*_net）；
+    完整重建版在 index.html augmentLending()，公式一致（張×px＝千元），改動需同步。
+    舊版資料（無 px 欄）原樣返回，前後版相容。"""
+    if not rows or "px" not in rows[0]:
+        return rows
+    for r in rows:
+        px = r.get("px")
+        r["plat_total"] = (r.get("sys_bal") or 0) + (r.get("otc_bal") or 0)
+        r["plat_total_chg"] = (r.get("sys_chg") or 0) + (r.get("otc_chg") or 0)
+        for base, out in (("foreign_vol", "foreign_net"), ("trust_vol", "trust_net"),
+                          ("dealer_vol", "dealer_net")):
+            v = r.get(base)
+            r[out] = js_round(v * px) if (px and v is not None) else None
+    return rows
 
 
 def fetch_brokers_context(pm: dict, primary: str) -> str:

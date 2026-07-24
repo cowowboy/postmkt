@@ -27,8 +27,19 @@
 - `src/fmclient.py`：四支 Python 管線共用的 FinMind client（api_get 統一重試：
   402/429 限流等 65 秒、其他錯誤等 3 秒）＋ `token()`／台北時區工具（2026-07-24
   抽出，原本四份實作重試策略互異、build_postmkt 甚至零重試）。
+- `src/twseclient.py`：TWSE 公開端點共用 client——全域節流鎖（IP 限流教訓，見「已知教訓」），
+  build_postmkt 與 build_mktbal 共用。
+- `tests/`＋`.github/workflows/test.yml`：離線單元測試（pytest，免 token/網路），
+  覆蓋日期閘門（news_fresh 跨午夜、slot_trading_day 延遲跨日、is_twse_holiday 民國年/
+  fail-open——都是實際踩過的坑）、diag 純函式（streak/rev_metrics/_pctile/_roc_date）、
+  fmclient 重試語意、零股合計列過濾、lending 瘦身欄位形狀與重建公式對齊。
+  本機跑：`python -m pytest tests/ -q`。Python/測試檔變動時 CI 自動跑。
 - `build_postmkt.py`：抓 FinMind dataset＋TWSE 公開端點的最新交易日全市場資料，
-  各 tab 預先聚合排序，輸出 `data/postmkt.json`（~2.4MB）。
+  各 tab 預先聚合排序，輸出 `data/postmkt.json`（~1.6MB；2026-07-24 瘦身：lending.rows
+  只落地基礎量＋px 收盤價，市值/金額衍生欄由前端 `augmentLending()` 與
+  `build_summary.py _augment_lending()` 載入後重建，公式三處需一致；當沖 `by_ratio`
+  比重榜同時停產——前端從未渲染，停產順帶把分點推估查詢從 ~100 檔減半）。
+  TWSE 端點（TWT72U/零股）改走 `src/twseclient.py` 全域節流。
   找不到最新交易日資料時自動往前回退最多 5 天；TWSE 端點失敗重試一次後降級（缺欄警示）。
 - `.github/workflows/build.yml`：平日 21:53 台北（13:53 UTC）排程＋手動觸發
   （2026-07-14 起由 21:30 延後：FinMind 當沖量值約 21:30 後才更新，留緩衝＋
@@ -47,7 +58,8 @@
   `data/market_balance_history.json`（daily 近30交易日＋monthly 近36月底，皆升序陣列）。
   `.github/workflows/mktbal.yml`：平日 22:20 台北排程（排在 build.yml/diag.yml 之後）＋
   push-paths 首推＋workflow_dispatch（可帶 backfill）。`--backfill` 一次性回補 3 年，
-  TWSE 抓取全域節流(預設4秒/請求，`MKTBAL_TWSE_THROTTLE`可調)＋指數退避重試(2/5/10/20秒)，
+  TWSE 抓取全域節流(預設4秒/請求，`TWSE_THROTTLE`可調、舊名`MKTBAL_TWSE_THROTTLE`仍相容；
+  節流鎖 2026-07-24 抽到 `src/twseclient.py` 供 build_postmkt 共用)＋指數退避重試(2/5/10/20秒)，
   避免連續打 TWT72U/TWTA1U 觸發 IP 限流（2026-07-19 修：前一版無節流，backfill 連抓
   約6次後被限流回空、近八成月份 sbl/unrestricted 全 null；修完 64 個回補日期全數 0 null）。
 - 主動ETF tab 直接讀 taiwan-flow-live-v2 的 raw JSON，不搬遷該站管線。

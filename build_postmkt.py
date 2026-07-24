@@ -13,11 +13,10 @@ import json
 import sys
 from pathlib import Path
 
-import requests
-
 ROOT = Path(__file__).resolve().parent
 sys.path.insert(0, str(ROOT / "src"))
 from fmclient import TAIPEI, api_get, token  # noqa: E402
+from twseclient import throttled_get  # noqa: E402 — TWSE 全域節流（限流教訓見該檔檔頭）
 
 TOP_N = 50
 MAX_BACK_DAYS = 5
@@ -61,7 +60,7 @@ def fetch_twse_lending(date: str, select_type: str) -> dict:
     j = None
     for attempt in range(2):
         try:
-            r = requests.get("https://www.twse.com.tw/rwd/zh/lending/TWT72U",
+            r = throttled_get("https://www.twse.com.tw/rwd/zh/lending/TWT72U",
                               params={"date": date.replace("-", ""), "selectType": select_type, "response": "json"},
                               timeout=30)
             r.raise_for_status()
@@ -102,8 +101,8 @@ def fetch_twse_oddlot(base_date: dt.date, report: str) -> tuple[str, list]:
     for back in range(MAX_BACK_DAYS + 1):
         d = base_date - dt.timedelta(days=back)
         try:
-            r = requests.get(f"https://www.twse.com.tw/rwd/zh/afterTrading/{report}",
-                             params={"date": d.strftime("%Y%m%d"), "response": "json"}, timeout=30)
+            r = throttled_get(f"https://www.twse.com.tw/rwd/zh/afterTrading/{report}",
+                              params={"date": d.strftime("%Y%m%d"), "response": "json"}, timeout=30)
             r.raise_for_status()
             j = r.json()
         except Exception as e:
@@ -246,11 +245,6 @@ def build_lending(date: str, lend_rows: list, margin_rows: list, short_rows: lis
         plat_total = sys_bal_v + otc_bal_v
         sys_chg = round(sb.get("in", 0) - sb.get("out", 0))
         otc_chg = round(ob.get("in", 0) - ob.get("out", 0))
-        sys_mv = round(sb.get("mv", 0))
-        otc_mv = round(ob.get("mv", 0))
-        # 各平台市值異動（千元）＝異動張數×今日收盤價，同 sbl_short_mv_chg 的近似法（見 L280-281 警語）
-        sys_mv_chg = round(sys_chg * px) if px else None
-        otc_mv_chg = round(otc_chg * px) if px else None
         sbl_short = (s.get("SBLShortSalesCurrentDayBalance") or 0) / 1000
         sbl_short_prev = (s.get("SBLShortSalesPreviousDayBalance") or 0) / 1000
         margin_short = (s.get("MarginShortSalesCurrentDayBalance") or 0) / 1000
@@ -259,35 +253,23 @@ def build_lending(date: str, lend_rows: list, margin_rows: list, short_rows: lis
         margin_limit = m.get("MarginPurchaseLimit") or 0
         short_limit = (s.get("MarginShortSalesQuota") or 0) / 1000
         margin_chg = round(margin_bal - (m.get("MarginPurchaseYesterdayBalance") or 0))
-        # 市值（千元）＝張數×收盤價；沒收盤價就不估
-        sbl_short_mv = round(sbl_short * px) if px else None
-        margin_short_mv = round(margin_short * px) if px else None
-        margin_mv = round(margin_bal * px) if px else None
-        # 市值異動（千元）＝張數異動×今日收盤價。無逐日歷史收盤價可回推昨日市值，
-        # 用「異動張數在今日價位的等值」做估計，非「今日市值－昨日市值」的精確差。
         sbl_short_chg_v = round(sbl_short - sbl_short_prev)
         margin_short_chg_v = round(margin_short - margin_short_prev)
-        sbl_short_mv_chg = round(sbl_short_chg_v * px) if px else None
-        margin_short_mv_chg = round(margin_short_chg_v * px) if px else None
-        short_total_mv_chg = (sbl_short_mv_chg + margin_short_mv_chg) if px else None
-        margin_mv_chg = round(margin_chg * px) if px else None
 
+        # 瘦身（2026-07-24）：市值/金額衍生欄（*_mv_chg、*_net、plat_total*、short_total*、
+        # foreign_shares_mv 等）不再落地——一律可由「基礎量 × px（當日收盤價）」重建，
+        # 由消費端現算：前端 index.html augmentLending()、摘要管線 build_summary.py
+        # _augment_lending()，公式必須與原後端版一致。由捨入後基礎量重建與原值最多差
+        # ±0.5張×px（千元級），遠小於顯示精度（億、1-2位小數）。省 ~0.8MB/2.4MB。
+        # sys_mv/otc_mv 例外保留：TWSE 官方市值欄（官方收盤口徑），非本管線推算。
         row = {
-            "c": c, "n": nm.get(c, ""),
+            "c": c, "n": nm.get(c, ""), "px": px,
             # 兩平台借券餘額（張；fetch_twse_lending()已將股轉張、元轉千元）
-            "sys_bal": round(sys_bal_v), "sys_chg": sys_chg, "sys_mv": sys_mv, "sys_mv_chg": sys_mv_chg,
-            "otc_bal": round(otc_bal_v), "otc_chg": otc_chg, "otc_mv": otc_mv, "otc_mv_chg": otc_mv_chg,
-            "plat_total": round(plat_total), "plat_total_chg": sys_chg + otc_chg,
-            "plat_total_mv": sys_mv + otc_mv,
+            "sys_bal": round(sys_bal_v), "sys_chg": sys_chg, "sys_mv": round(sb.get("mv", 0)),
+            "otc_bal": round(otc_bal_v), "otc_chg": otc_chg, "otc_mv": round(ob.get("mv", 0)),
             # Short interest（放空部位：借賣＝SBL借券賣出、融券）
             "sbl_short_bal": round(sbl_short), "sbl_short_chg": sbl_short_chg_v,
-            "sbl_short_mv": sbl_short_mv, "sbl_short_mv_chg": sbl_short_mv_chg,
             "margin_short_bal": round(margin_short), "margin_short_chg": margin_short_chg_v,
-            "margin_short_mv": margin_short_mv, "margin_short_mv_chg": margin_short_mv_chg,
-            "short_total": round(sbl_short + margin_short),
-            "short_total_chg": sbl_short_chg_v + margin_short_chg_v,
-            "short_total_mv": (sbl_short_mv + margin_short_mv) if px else None,
-            "short_total_mv_chg": short_total_mv_chg,
             "usage_ratio": round(sbl_short / plat_total * 100, 2) if plat_total > 0 else None,
             # 借券賣出SBL流量明細（千元/張）
             "sbl_sales": round((s.get("SBLShortSalesShortSales") or 0) / 1000),
@@ -296,23 +278,18 @@ def build_lending(date: str, lend_rows: list, margin_rows: list, short_rows: lis
             "lend_vol": la.get("vol", 0), "lend_deals": la.get("deals", 0), "lend_fee_max": la.get("fee_max"),
             # 融資
             "margin_buy": m.get("MarginPurchaseBuy"), "margin_bal": round(margin_bal),
-            "margin_chg": margin_chg, "margin_mv": margin_mv, "margin_mv_chg": margin_mv_chg,
+            "margin_chg": margin_chg,
             "margin_usage": round(margin_bal / margin_limit * 100, 2) if margin_limit > 0 else None,
             "short_usage": round(margin_short / short_limit * 100, 2) if short_limit > 0 else None,
             "credit_ratio": round(margin_short / margin_bal * 100, 2) if margin_bal > 0 else None,
             "offset": m.get("OffsetLoanAndShort"),
             # 當沖（由呼叫端合併，避免這裡重複算比重分母）
-            # 三大法人買賣超（張數：股數差÷1000；金額千元＝股數差×收盤價÷1000）
+            # 三大法人買賣超（張數：股數差÷1000；金額衍生欄由消費端 vol×px 重建）
             "foreign_vol": round(it["foreign"] / 1000),
-            "foreign_net": round(it["foreign"] * px / 1000) if px else None,
             "trust_vol": round(it["trust"] / 1000),
-            "trust_net": round(it["trust"] * px / 1000) if px else None,
             "dealer_vol": round(it["dealer"] / 1000),
-            "dealer_net": round(it["dealer"] * px / 1000) if px else None,
             # 外資持股
             "foreign_shares": hd.get("ForeignInvestmentShares"),
-            "foreign_shares_mv": round(hd.get("ForeignInvestmentShares") * px / 1000)
-                if (px and hd.get("ForeignInvestmentShares") is not None) else None,
             "foreign_ratio": hd.get("ForeignInvestmentSharesRatio"),
             "foreign_remain_ratio": hd.get("ForeignInvestmentRemainRatio"),
             "foreign_limit_ratio": hd.get("ForeignInvestmentUpperLimitRatio"),
@@ -339,7 +316,7 @@ def build_lending(date: str, lend_rows: list, margin_rows: list, short_rows: lis
         else:
             row["dt_vol"] = row["dt_amt"] = row["dt_diff"] = None
 
-    rows_out.sort(key=lambda x: -x["plat_total"])
+    rows_out.sort(key=lambda x: -(x["sys_bal"] + x["otc_bal"]))  # 依兩平台借券餘額合計
     # 不截斷到TOP_N：Table1的定位是「查任一檔股票」，前端主排行榜只顯示前TOP_N，
     # 但完整清單要留給搜尋功能查詢不在前段班的股票（見cmoney-sbl-mapping-research.md）。
     return {"date": date, "rows": rows_out,
@@ -423,20 +400,17 @@ def build_daytrading(date: str, rows: list, price_rows: list, nm: dict) -> dict:
             "chg_pct": chg_pct, "amp_pct": amp_pct,
         })
     by_amount = sorted(recs, key=lambda x: -x["amt"])[:TOP_N]
-    # 比重榜過濾極小量股（總量 < 500 張）避免失真
-    by_ratio = sorted((x for x in recs if x["ratio"] is not None and (tv.get(x["c"]) or 0) >= 500_000),
-                      key=lambda x: -x["ratio"])[:TOP_N]
+    # by_ratio（比重榜）2026-07-24 停產：前端與摘要管線只消費 by_amount，比重榜
+    # 從未被渲染；停產同時把分點推估查詢從「兩榜聯集 ~100 檔」減半為金額榜 50 檔
 
-    codes = sorted({x["c"] for x in by_amount} | {x["c"] for x in by_ratio})
+    codes = sorted({x["c"] for x in by_amount})
     if date and codes:
         print(f"  券商分點推估：{len(codes)} 檔逐一查詢…", flush=True)
         brokers = daytrading_broker_estimate(date, codes, close_map)
         for x in by_amount:
             x["traders"] = brokers.get(x["c"], [])
-        for x in by_ratio:
-            x["traders"] = brokers.get(x["c"], [])
 
-    return {"date": date, "by_amount": by_amount, "by_ratio": by_ratio}
+    return {"date": date, "by_amount": by_amount}
 
 
 def block_trader_map(date: str) -> dict:

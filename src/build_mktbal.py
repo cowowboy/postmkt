@@ -69,15 +69,10 @@ from __future__ import annotations
 import argparse
 import json
 import logging
-import os
-import sys
-import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta
 from pathlib import Path
-
-import requests
 
 from fmclient import TAIPEI, api_get, token  # noqa: E402 — 同目錄共用模組
 
@@ -90,14 +85,6 @@ OUT_PATH = ROOT / "data" / "market_balance_history.json"
 TPE = TAIPEI  # 沿用本檔既有名稱
 TWT72U_URL = "https://www.twse.com.tw/rwd/zh/lending/TWT72U"
 TWTA1U_URL = "https://www.twse.com.tw/rwd/zh/marginTrading/TWTA1U"
-TWSE_HEADERS = {
-    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
-                  "(KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
-    "Accept": "application/json, text/javascript, */*; q=0.01",
-    "Accept-Language": "zh-TW,zh;q=0.9,en;q=0.8",
-    "Referer": "https://www.twse.com.tw/zh/",
-    "X-Requested-With": "XMLHttpRequest",
-}
 
 RECENT_DAILY_KEEP = 30
 MONTHLY_KEEP = 36
@@ -105,28 +92,10 @@ BACKFILL_YEARS = 3
 UNRESTRICTED_CATEGORIES = ["X", "A", "F", "G", "B", "I"]  # TWTA1U selectType 全 6 類
 UNRESTRICTED_GROUP_TITLE = "證券商不限用途款項借貸"
 
-# ════════════════════════════════════════════════════════════════
-# TWSE 節流＋指數退避重試（根因：backfill 連續快速打 TWT72U/TWTA1U，約 6 次後被 IP 限流，
-# 回應變成非 JSON 空內容 → "Expecting value: line 1 column 1 (char 0)"。用全域鎖把所有
-# TWSE 實際 HTTP 呼叫序列化，兩次呼叫間至少間隔 TWSE_THROTTLE_SECONDS 秒；遇到限流/空回應
-# 時指數退避重試而非只重試一次。）
-# ════════════════════════════════════════════════════════════════
-TWSE_THROTTLE_SECONDS = float(os.environ.get("MKTBAL_TWSE_THROTTLE", "4"))
-TWSE_RETRY_BACKOFFS = [2, 5, 10, 20]  # 秒；暫時性錯誤（含空回應）的重試等待序列
-_twse_lock = threading.Lock()
-_twse_last_request_ts = [0.0]
-
-
-def _twse_throttled_get(url: str, params: dict, timeout: int) -> requests.Response:
-    """所有 TWSE 請求都經過這裡，用全域鎖序列化＋節流，避免併發/連發觸發 IP 限流。"""
-    with _twse_lock:
-        wait = TWSE_THROTTLE_SECONDS - (time.monotonic() - _twse_last_request_ts[0])
-        if wait > 0:
-            time.sleep(wait)
-        try:
-            return requests.get(url, params=params, timeout=timeout, headers=TWSE_HEADERS)
-        finally:
-            _twse_last_request_ts[0] = time.monotonic()
+# TWSE 節流＋指數退避重試：節流鎖 2026-07-24 抽到 twseclient.py（與 build_postmkt 共用），
+# 退避迴圈仍在本檔各 fetcher（遇限流/空回應依 TWSE_RETRY_BACKOFFS 重試而非只一次）。
+from twseclient import RETRY_BACKOFFS as TWSE_RETRY_BACKOFFS  # noqa: E402
+from twseclient import throttled_get as _twse_throttled_get  # noqa: E402
 
 
 def parse_num(s) -> int | None:

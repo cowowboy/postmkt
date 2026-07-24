@@ -917,6 +917,31 @@ async function bkQuery(kind){
   }
   BK_LOADING = null; render();
 }
+// postmkt.json 瘦身（2026-07-24）：lending.rows 只落地基礎量＋px（當日收盤價），
+// 市值/金額衍生欄載入後在此重建（公式＝原後端 build_lending 版；由捨入後基礎量重建，
+// 與原值最多差 ±0.5張×px 千元級，遠小於顯示精度）。改公式需同步 build_summary.py
+// _augment_lending()。舊版資料（無 px 欄、衍生欄已在）自動跳過，前後版相容。
+function augmentLending(d){
+  const rows = d && d.lending && d.lending.rows;
+  if (!rows || !rows.length || rows[0].px === undefined) return;
+  for (const r of rows){
+    const px = r.px;
+    const mv = v => (px && v != null) ? Math.round(v * px) : null;  // 千元＝張×收盤價
+    r.plat_total = r.sys_bal + r.otc_bal;
+    r.plat_total_chg = r.sys_chg + r.otc_chg;
+    r.plat_total_mv = r.sys_mv + r.otc_mv;
+    r.sys_mv_chg = mv(r.sys_chg); r.otc_mv_chg = mv(r.otc_chg);
+    r.sbl_short_mv = mv(r.sbl_short_bal); r.sbl_short_mv_chg = mv(r.sbl_short_chg);
+    r.margin_short_mv = mv(r.margin_short_bal); r.margin_short_mv_chg = mv(r.margin_short_chg);
+    r.short_total = r.sbl_short_bal + r.margin_short_bal;
+    r.short_total_chg = r.sbl_short_chg + r.margin_short_chg;
+    r.short_total_mv = px ? r.sbl_short_mv + r.margin_short_mv : null;
+    r.short_total_mv_chg = px ? r.sbl_short_mv_chg + r.margin_short_mv_chg : null;
+    r.margin_mv = mv(r.margin_bal); r.margin_mv_chg = mv(r.margin_chg);
+    r.foreign_net = mv(r.foreign_vol); r.trust_net = mv(r.trust_vol); r.dealer_net = mv(r.dealer_vol);
+    r.foreign_shares_mv = (px && r.foreign_shares != null) ? Math.round(r.foreign_shares * px / 1000) : null;
+  }
+}
 // 股票代號→名稱對照：從 postmkt.json 現成資料建（零股涵蓋全上市含ETF，最完整；
 // 借券rows補洞），不用另外抓 TaiwanStockInfo
 let BK_NM = {};
@@ -1602,7 +1627,7 @@ const SUM_SYS_SYNTH = "你是台股首席策略師。以下是同一天由三個
 // 在這裡補一次「缺就補抓」，與 load() 用同樣的來源，已有資料則不重抓。
 async function sumCtxPostmkt(){
   try{
-    if (!state.pm){ try{ state.pm = await loadJSON("data/postmkt.json?t="+Date.now()); buildBkNm(); }catch(e){} }
+    if (!state.pm){ try{ state.pm = await loadJSON("data/postmkt.json?t="+Date.now()); augmentLending(state.pm); buildBkNm(); }catch(e){} }
     if (!state.aetf){
       const o = {latest:null, diff:null};
       try{ o.latest = await loadJSON(V2_BASE+"/latest.json?t="+Date.now()); }catch(e){}
@@ -2578,7 +2603,7 @@ async function load(){
     state.aetf = o;
   })();
   const pPm = (async ()=>{
-    try{ state.pm = await loadJSON("data/postmkt.json?t="+t); buildBkNm(); }
+    try{ state.pm = await loadJSON("data/postmkt.json?t="+t); augmentLending(state.pm); buildBkNm(); }
     catch(e){ state.pmErr = e; }
   })();
   // 三大法人買賣超（taiwan-flows 跨repo）：失敗不影響其他資料，state.tf 維持 null
