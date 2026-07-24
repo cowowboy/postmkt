@@ -1,2 +1,2 @@
-requests>=2.31,<3
+requests>=2.34.2,<3
 urllib3>=1.26,<3  # build_diag.py 直接 import（TPEx 憑證缺 SKI、verify=False 關警告用）
