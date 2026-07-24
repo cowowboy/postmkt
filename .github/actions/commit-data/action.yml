@@ -31,8 +31,13 @@ runs:
         fi
         git commit -m "${{ inputs.message }} $(date -u +%Y-%m-%dT%H:%MZ)"
         pushed=0
+        # -X theirs：rebase 重放的是本 run 剛產的資料 commit（rebase 語意中為 theirs），
+        # 同一資料檔與 main 上他人 commit 衝突時「最新建置獲勝」——資料檔皆整檔重新產出，
+        # 逐行合併無意義。rebase 失敗要先 abort 清理，否則工作樹卡在未解衝突狀態、
+        # 後續重試全部秒敗（2026-07-24 diag 多餘重跑與正牌 run 相撞的實際教訓，issue #12）
         for i in 1 2 3 4 5; do
-          if git pull --rebase origin main && git push; then pushed=1; break; fi
+          if git pull --rebase -X theirs origin main && git push; then pushed=1; break; fi
+          git rebase --abort 2>/dev/null || true
           sleep 4
         done
         if [ "$pushed" != "1" ]; then echo "::error::push failed after 5 retries"; exit 1; fi
