@@ -192,6 +192,49 @@
   .dbtn{background:var(--chip);border:1px solid var(--line);color:var(--txt);border-radius:8px;
     padding:5px 12px;font-size:.84rem;cursor:pointer}
   .dbtn:hover{border-color:var(--accent)}
+  /* 主動ETF比較（acmp- 前綴避免撞名）：選檔面板仿新聞晨報「來源」勾選、四欄橫向捲動 */
+  .acmp-btn{background:var(--card);border:1px solid var(--line);border-radius:9px;padding:5px 11px;
+    font-size:.8rem;color:var(--muted);cursor:pointer;user-select:none;display:inline-block}
+  .acmp-btn:hover{border-color:#33507e}
+  .acmp-panel{margin-top:8px;background:var(--card);border:1px solid var(--line);
+    border-radius:12px;padding:10px 14px}
+  .acmp-phead{display:flex;gap:10px;margin-bottom:8px}
+  .acmp-phead a{color:var(--accent);font-size:.76rem;cursor:pointer;text-decoration:none}
+  .acmp-phead .acmp-close{margin-left:auto;color:var(--muted)}
+  .acmp-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(158px,1fr));gap:4px 12px}
+  .acmp-opt{display:flex;align-items:center;gap:7px;font-size:.8rem;color:var(--txt);cursor:pointer;padding:3px 0}
+  .acmp-opt input{accent-color:var(--accent);width:15px;height:15px}
+  .acmp-opt .n{color:var(--muted);font-size:.7rem;margin-left:auto}
+  .acmp-opt.dis{opacity:.45}
+  .acmp-hint{color:var(--muted);font-size:.74rem;margin:6px 2px 8px}
+  .acmp-scroll{overflow-x:auto;padding-bottom:8px;-webkit-overflow-scrolling:touch}
+  .acmp-scroll::-webkit-scrollbar{height:8px}
+  .acmp-scroll::-webkit-scrollbar-thumb{background:var(--line);border-radius:4px}
+  .acmp-cols{display:flex;gap:10px;flex-wrap:nowrap;align-items:stretch;width:max-content}
+  .acmp-col{flex:0 0 250px;width:250px;background:var(--card);border:1px solid var(--line);
+    border-radius:14px;padding:10px 12px 12px;display:flex;flex-direction:column}
+  .acmp-head{border-bottom:1px solid var(--line);padding-bottom:8px;margin-bottom:6px}
+  .acmp-head .etfnm{font-size:.86rem;font-weight:650;margin-top:1px}
+  .acmp-head .dt{color:var(--muted);font-size:.72rem;margin-top:3px}
+  .acmp-head .dt b{color:var(--txt);font-weight:650}
+  .acmp-cat{margin-top:8px}
+  .acmp-ct{font-size:.78rem;font-weight:700;display:flex;align-items:center;gap:6px;margin-bottom:3px}
+  .acmp-ic{display:inline-flex;width:16px;height:16px;border-radius:50%;
+    align-items:center;justify-content:center;font-size:.62rem;color:#fff}
+  .acmp-ic-new{background:#d9822b}.acmp-ic-add{background:#c94a4a}.acmp-ic-cut{background:#2e9e63}.acmp-ic-exit{background:#5b6b8c}
+  .acmp-ct-new{color:#f0b45a}.acmp-ct-add{color:#ef5b5b}.acmp-ct-cut{color:#2fbf71}.acmp-ct-exit{color:#8aa0c0}
+  table.acmp-mini{width:100%;border-collapse:separate;border-spacing:0;font-size:.78rem}
+  .acmp-mini th{color:var(--muted);font-weight:600;font-size:.66rem;text-align:right;padding:2px 4px}
+  .acmp-mini th:first-child{text-align:left}
+  .acmp-mini td{padding:2.5px 4px;text-align:right;white-space:nowrap;
+    box-shadow:inset 0 -1px 0 rgba(36,53,86,.4)}
+  .acmp-mini tr:last-child td{box-shadow:none}
+  .acmp-mini td:first-child{text-align:left}
+  .acmp-mini .nm{color:var(--txt)}
+  .acmp-mini .cd{font-family:Consolas,monospace;color:var(--muted);font-size:.68rem;margin-left:3px}
+  .acmp-none{color:var(--muted);font-size:.78rem;padding:2px 4px}
+  .acmp-more{color:var(--accent);font-size:.72rem;padding:3px 4px;cursor:pointer}
+  .acmp-foot{margin-top:6px;color:var(--muted);font-size:.74rem;line-height:1.7}
 </style>
 </head>
 <body>
@@ -250,6 +293,7 @@ const state = { tab:"insight", openEtf:null, openSub:null, openLend:null, lendQu
   datesData:null, datesLoading:false,
   diag:null, diagErr:null, diagLoading:false, diagLive:undefined, diagOpen:null, diagRulesOpen:false, diagMsg:"",
   diagNews:undefined, diagAI:null,
+  aetfCmpOpen:false, aetfCmpMore:{},
   mktbal:null, mktbalErr:null, mktbalLoading:false, mktbalSel:"margin", mktbalOpen:{} };
 
 const esc = s => String(s==null?"":s).replace(/[&<>"']/g,
@@ -586,6 +630,117 @@ function aetfInsight(diff){
 const byChips = by => Object.entries(by||{}).sort((a,b)=>Math.abs(b[1])-Math.abs(a[1]))
   .map(([k,v])=>`<span class="${v>0?'up':'down'}" style="white-space:nowrap">${esc(k)} ${(v>0?"+":"")+v.toLocaleString("en-US")}</span>`).join("　");
 
+// ---------- 主動ETF 比較（四欄）：選檔存 localStorage("pm_aetf_cmp")，上限 4 檔 ----------
+const AETF_CMP_KEY = "pm_aetf_cmp", AETF_CMP_MAX = 4;
+// 候選代號依集保規模(twse_aum_yi)降冪
+const aetfCmpCodes = latest => Object.keys((latest&&latest.etfs)||{})
+  .sort((a,b)=>((latest.etfs[b].twse_aum_yi||0)-(latest.etfs[a].twse_aum_yi||0)));
+// 預設＝規模前3＋00405A 富邦龍耀（00405A 已在前3、或資料無此檔時取前4）
+function aetfCmpDefault(latest){
+  const codes = aetfCmpCodes(latest);
+  const def = codes.slice(0,3);
+  if (codes.includes("00405A") && !def.includes("00405A")) def.push("00405A");
+  else def.push(...codes.slice(3,4));
+  return def.slice(0, AETF_CMP_MAX);
+}
+// 讀選擇：localStorage 有存就用（剔除已不存在於資料的代號）；沒存或壞值用預設
+function aetfCmpSel(latest){
+  let v = null;
+  try{ v = JSON.parse(localStorage.getItem(AETF_CMP_KEY)); }catch(e){}
+  if (!Array.isArray(v)) return aetfCmpDefault(latest);
+  const have = (latest&&latest.etfs)||{};
+  return v.filter(c=>have[c]).slice(0, AETF_CMP_MAX);
+}
+const aetfCmpSave = sel => localStorage.setItem(AETF_CMP_KEY, JSON.stringify(sel));
+// 分類：優先用 diff 端欄位 k（new/add/cut/exit，v2 端即將提供）；缺 k 時用 latest 現持股推回——
+// sell 筆該股已不在現持股（或股數0）→出清、否則減碼；buy 筆 prev=現股數−rzh×1000，prev<1000→新增
+function aetfCmpClassify(de, le){
+  const cats = { new:[], add:[], cut:[], exit:[] };
+  const hold = (le && le.stocks) || {};
+  const shares = c => { const v = hold[c]; const s = v==null?null:(Array.isArray(v)?v[0]:v.shares); return s||0; };
+  for (const r of (de.buy||[])){
+    let k = r.k;
+    if (!cats[k]) k = (shares(r.c) - (r.rzh||0)*1000) < 1000 ? "new" : "add";
+    cats[k].push(r);
+  }
+  for (const r of (de.sell||[])){
+    let k = r.k;
+    if (!cats[k]) k = shares(r.c) <= 0 ? "exit" : "cut";
+    cats[k].push(r);
+  }
+  const key = r => r.val==null ? -1 : Math.abs(r.val);  // 依|市值|降冪，val null 排最後
+  for (const arr of Object.values(cats)) arr.sort((a,b)=>key(b)-key(a));
+  return cats;
+}
+const AETF_CMP_CATS = [["new","＋","新增"],["add","▲","加碼"],["cut","▼","減碼"],["exit","✕","出清"]];
+function aetfCmpColHtml(code, latest, diff){
+  const le = (latest.etfs||{})[code] || {};
+  const de = (diff && diff.etfs && diff.etfs[code]) || null;
+  const dd = x => String(x||"").slice(5).replace("/","-");
+  let h = `<div class="acmp-col"><div class="acmp-head"><span class="code">${esc(code)}</span>`
+    + `<div class="etfnm">${esc(le.name||"")}</div>`
+    + (de ? `<div class="dt">資料日 <b>${esc(dd(de.d1))}</b>（對比 ${esc(dd(de.d0))}）</div>` : ``)
+    + `</div>`;
+  if (!de) return h + `<div class="acmp-none" style="padding:8px 4px">無異動資料</div></div>`;
+  const cats = aetfCmpClassify(de, le);
+  let headerDone = false;
+  for (const [k, icon, label] of AETF_CMP_CATS){
+    h += `<div class="acmp-cat"><div class="acmp-ct acmp-ct-${k}"><span class="acmp-ic acmp-ic-${k}">${icon}</span>${label}</div>`;
+    const rows = cats[k];
+    if (!rows.length){ h += `<div class="acmp-none">無</div></div>`; continue; }
+    const open = !!state.aetfCmpMore[code+":"+k];
+    const show = open ? rows : rows.slice(0,4);
+    h += `<table class="acmp-mini">`;
+    if (!headerDone){ h += `<tr><th>個股</th><th>漲跌%</th><th>張數</th><th>市值(億)</th></tr>`; headerDone = true; }
+    for (const r of show){
+      const p = diagPrice(r.c);
+      const chg = (p && p.chg != null)
+        ? `<td class="${p.chg>0?"up":p.chg<0?"down":"mut"}" title="${esc(p.live&&p.ts?("報價時間 "+p.ts):"盤後收盤價")}">${p.chg>0?"+":""}${(+p.chg).toFixed(1)}%</td>`
+        : `<td class="mut">—</td>`;
+      const z = Math.round(r.zh||0);
+      const zc = `<td class="${z>0?"up":z<0?"down":"mut"}">${z>0?"+":""}${z.toLocaleString("en-US")}</td>`;
+      const vc = r.val==null ? `<td class="mut">—</td>`
+        : `<td class="${r.val>0?"up":r.val<0?"down":"mut"}">${r.val>0?"+":""}${(r.val/1e8).toFixed(2)}</td>`;
+      h += `<tr><td><span class="nm">${esc(r.n||r.c)}</span><span class="cd">${esc(r.c)}</span></td>${chg}${zc}${vc}</tr>`;
+    }
+    if (!open && rows.length > 4)
+      h += `<tr><td colspan="4" class="acmp-more" data-acmpmore="${esc(code+":"+k)}">⋯還有 ${rows.length-4} 檔（點開展開）</td></tr>`;
+    h += `</table></div>`;
+  }
+  return h + `</div>`;
+}
+function aetfCmpBlockHtml(latest, diff){
+  const codes = aetfCmpCodes(latest);
+  const selRaw = aetfCmpSel(latest);
+  const sel = codes.filter(c=>selRaw.includes(c));  // 欄位固定依規模降冪呈現
+  const stripName = n => String(n||"").replace(/^主動/,"");
+  let h = sec("主動ETF 比較","各檔相對前一揭露日的持股異動");
+  h += `<span class="acmp-btn" data-acmptoggle>選擇 ETF ${sel.length}/${codes.length} ${state.aetfCmpOpen?"▴":"▾"}</span>`;
+  if (state.aetfCmpOpen){
+    h += `<div class="acmp-panel"><div class="acmp-phead">`
+      + `<a data-acmpdefault>預設（規模前3＋富邦龍耀）</a><a data-acmpclear>清除</a>`
+      + `<a class="acmp-close" data-acmptoggle>收合 ▴</a></div><div class="acmp-grid">`;
+    const full = sel.length >= AETF_CMP_MAX;
+    for (const c of codes){
+      const e = latest.etfs[c], on = sel.includes(c), dis = full && !on;
+      const aum = e.twse_aum_yi==null ? "—" : Math.round(e.twse_aum_yi).toLocaleString("en-US")+"億";
+      h += `<label class="acmp-opt${dis?" dis":""}"><input type="checkbox" data-acmpchk data-code="${esc(c)}"${on?" checked":""}${dis?" disabled":""}>`
+        + `<span>${esc(c)} ${esc(stripName(e.name))}</span><span class="n">${esc(aum)}</span></label>`;
+    }
+    h += `</div></div>`;
+  }
+  h += `<div class="acmp-hint">已選 ${sel.length}／${AETF_CMP_MAX} 檔（勾滿 ${AETF_CMP_MAX} 檔後其餘選項反灰；再點已勾者可取消）。選擇記在瀏覽器 localStorage。↔ 下方區塊可左右拉動。</div>`;
+  if (!sel.length) h += `<div class="empty">尚未選擇 ETF，點上方「選擇 ETF」勾選（最多 ${AETF_CMP_MAX} 檔）。</div>`;
+  else h += `<div class="acmp-scroll"><div class="acmp-cols">${sel.map(c=>aetfCmpColHtml(c,latest,diff)).join("")}</div></div>`;
+  h += `<div class="acmp-foot">`
+    + `· 異動＝該檔 ETF 最近兩個持股揭露日（src_date）的快照相減；各檔揭露日不同，逐欄標示。<br>`
+    + `· 張數＝持股股數變化 ÷ 1000；市值＝異動張數 × 該股收盤價（億，兩位小數）。<br>`
+    + `· 漲跌% 為個股最新交易日漲跌幅（來源：diag／live 報價，資料日可能晚於 ETF 揭露日）。<br>`
+    + `· 每類最多列 4 檔、依市值絕對值排序，超出收合為「⋯還有 N 檔（點開展開）」。<br>`
+    + `· 微量異動（小於 1 張或前日持股 0.5%）視為噪音不列入，口徑同 aETF diff。</div>`;
+  return h;
+}
+
 function renderAETF(){
   const main = document.getElementById("main");
   const a = state.aetf;
@@ -599,6 +754,9 @@ function renderAETF(){
     const adv = aetfInsight(diff);
     if (adv.length) html += `<div class="mcard">${adv.map(x=>`<div>${x}</div>`).join("")}</div>`;
   }
+  // 主動ETF 比較（在 ① 之前）：漲跌% 需 live 報價，未載入就觸發（與 diag tab 同一套，載畢重繪）
+  if (state.diagLive === undefined) fetchDiagLive();
+  html += aetfCmpBlockHtml(latest, diff);
   // ① ETF 總覽（點 ETF 名稱展開加碼/減碼子表）
   const dd = x => String(x||"").slice(5).replace("/","-");
   const ov = Object.entries(latest.etfs||{}).map(([code,e])=>{
@@ -1155,6 +1313,24 @@ function renderDates(){
 document.addEventListener("click", e=>{
   const el0 = e.target.closest("[data-datesrefresh]");
   if (el0){ state.datesData = null; render(); return; }  // 清快取→renderDates 觸發 fetchDates
+  // 主動ETF比較：面板開合／預設／清除／勾選／「還有N檔」展開（委派撐過重繪）
+  const a0 = e.target.closest("[data-acmptoggle]");
+  if (a0){ state.aetfCmpOpen = !state.aetfCmpOpen; render(); return; }
+  const a1 = e.target.closest("[data-acmpdefault]");
+  if (a1){ const l = (state.aetf||{}).latest; if (l){ aetfCmpSave(aetfCmpDefault(l)); render(); } return; }
+  const a2 = e.target.closest("[data-acmpclear]");
+  if (a2){ aetfCmpSave([]); render(); return; }
+  const a3 = e.target.closest("[data-acmpmore]");
+  if (a3){ state.aetfCmpMore[a3.dataset.acmpmore] = true; render(); return; }
+  // 勾選：點 label 文字時瀏覽器會補發一次 input 的 click，只處理 target 是 input 的那次
+  if (e.target.matches && e.target.matches("input[data-acmpchk]")){
+    const l = (state.aetf||{}).latest; if (!l) return;
+    const c = e.target.dataset.code, sel = aetfCmpSel(l);
+    const i = sel.indexOf(c);
+    if (i >= 0) sel.splice(i,1);
+    else if (sel.length < AETF_CMP_MAX) sel.push(c);
+    aetfCmpSave(sel); render(); return;
+  }
   const el1 = e.target.closest(".clk[data-etf]");
   if (el1){ state.openEtf = state.openEtf===el1.dataset.etf ? null : el1.dataset.etf; render();
     if (state.openEtf){ const x=document.getElementById("etfdd"); if(x)x.scrollIntoView({behavior:"smooth",block:"start"}); } return; }
@@ -2159,7 +2335,7 @@ async function fetchDiagLive(){
     try{ state.diagLive = await loadJSON(SUM_V2_RAW+"/live.json?t="+t); }
     catch(e2){ state.diagLive = { err:1 }; }
   }
-  if (state.tab === "diag") render();
+  if (state.tab === "diag" || state.tab === "aetf") render();  // aetf 比較區塊的漲跌% 也吃這份
 }
 // 現價解析：live 有此檔就用即時價（dp=漲跌價差），否則退回素材庫盤後收盤（前收）
 function diagPrice(c){
