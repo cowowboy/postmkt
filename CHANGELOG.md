@@ -3,6 +3,23 @@
 帶日期的變更紀錄從 README「快速接手」搬出集中於此（2026-07-24 起）；
 更早的逐日歷史見 git log。常青的架構／口徑／教訓說明仍在 README。
 
+## 2026-07-28 彙總分析：`max_tokens` 8000 → 16000
+
+前一批的空回應守門只讓「thinking 吃光額度」變成明確失敗＋retry，不降低發生率。實測 5 個時段
+共 30 份子分析：**盤後分析 10 份裡有 6 份撞到 8000 上限**（4 份 text 全空、2 份文字被截短），
+新聞晨報 1/10，即時類股動態 0/10（最多只用到 2,247 thinking token）——集中在 context 最大的
+盤後分析（實測 `input_tokens` 7,774–7,923，新聞晨報 4,344–4,487、即時類股 1,803–3,267）。
+
+Sonnet 5 已移除 `budget_tokens`（送出即 400），**無法單獨限制 thinking**，thinking 與回覆文字
+共用同一份 `max_tokens`，所以只剩「拉高上限」或「降 effort」兩條路。選前者：`max_tokens` 是
+上限而非預留額度、只按實際生成計費，而一份空白目前是燒 8000 token 換 0 字、加上 retry 等於
+16000 換 0 字——**拉高上限比維持現狀更省**。降 effort 則是反方向（官方指引：推理不足應調高
+而非調低），且會犧牲最複雜那頁的品質。16000 也是非串流請求的建議上限，不必改成串流架構。
+
+三頁同調（即時類股動態用不到，調高對它零成本）；`effort` 維持 `medium`。三站 `callClaude`
+逐字同步。`tests/test_summary_call.py` 新增斷言釘住 16000 與 `thinking.type=adaptive`。
+`stop_reason` 已落進 `six[]`，之後若仍見 `max_tokens` 代表 16000 也不夠，屆時再考慮縮 context。
+
 ## 2026-07-27 彙總分析：空回應攔截 + 三條 SYS 規則放寬
 
 - **修 bug：AI 空回應未攔截**。adaptive thinking 吃滿 `max_tokens:8000` 時回應只有 thinking block、

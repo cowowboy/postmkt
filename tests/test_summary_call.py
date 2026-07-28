@@ -43,10 +43,14 @@ def _stub_post(monkeypatch, payload):
 # ---------- 空回應攔截（2026-07-27 事故） ----------
 
 def test_text_and_stop_reason_returned(monkeypatch):
-    _stub_post(monkeypatch, _msg(THINKING_ONLY + [{"type": "text", "text": "內容"}]))
+    calls = _stub_post(monkeypatch, _msg(THINKING_ONLY + [{"type": "text", "text": "內容"}]))
     res = bs.call_claude("m", "sys", "user")
     assert res["text"] == "內容"
     assert res["stop_reason"] == "end_turn"
+    # thinking 與回覆文字共用 max_tokens，且 Sonnet 5 無 budget_tokens 可單獨限制 thinking，
+    # 故此值是「thinking 吃光額度→空回應」的唯一防線；與三站前端 callClaude 同步（16000）。
+    assert calls[0]["max_tokens"] == 16000
+    assert calls[0]["thinking"] == {"type": "adaptive"}
 
 
 def test_thinking_only_response_is_failure(monkeypatch):
