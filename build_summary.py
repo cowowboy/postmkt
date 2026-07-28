@@ -711,11 +711,11 @@ def anth_key() -> str:
 
 
 def call_claude(model: str, system: str, user_msg: str) -> dict:
-    """對齊三站前端 callClaude()：adaptive thinking + effort medium + max_tokens 8000。"""
+    """對齊三站前端 callClaude()：adaptive thinking + effort medium + max_tokens 16000。"""
     r = requests.post(URL_ANTHROPIC,
                       headers={"content-type": "application/json", "x-api-key": anth_key(),
                                "anthropic-version": "2023-06-01"},
-                      json={"model": model, "max_tokens": 8000,
+                      json={"model": model, "max_tokens": 16000,
                             "thinking": {"type": "adaptive"}, "output_config": {"effort": "medium"},
                             "system": system, "messages": [{"role": "user", "content": user_msg}]},
                       timeout=(15, 600))
