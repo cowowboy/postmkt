@@ -664,7 +664,7 @@ SYS_LIVE = (
     "(4) 每條洞見／建議必須點名個股代號＋可追溯的具體數據依據(集中倍數/貢獻點/連買日/漲跌%等)，禁止空泛臆測。"
     "(5) 洞見與建議合計不超過 10 條，挑共振最強、依據最紮實的。"
     "(6) 建議個股以 alpha 為首要考量，優先納入中小型標的；大型權值股(台灣50成分、2330台積電/2317鴻海/2454聯發科、金控股等)合計不得超過清單一半——這是上限而非目標，不必硬湊，中小型訊號更強就多放中小型甚至大型不放。"
-    "(7) 推薦個股必須有『當日成交量 ≥ 1,000 張』的量能佐證，量能只能引自資料中有標示成交量的段落（如當沖排行的量、鉅額的總量、個股資金集中的量）；若該標的在所有帶量段落都查不到成交量，視為量能未知，一律不得列入推薦。"
+    "(7) 個股成交量只出現在『個股盤中資金集中 前15』段的「量X張」，該段在沒有盤中資金集中資料時會整段略過、個別標的的量也可能是「—」，故個股評選不硬性套用『當日成交量 ≥ 1,000 張』門檻；量能查得到時仍應引用並優先採用達 1,000 張者，查不到者視為量能未知，仍可列入推薦但須於該檔標注『量能未知』。"
     "(8) 資料為盤中準即時快照(約分鐘級、20秒輪詢)，僅反映當下資金分布、非全日定論，判讀須註明時效性。"
     "(9) 繁體中文、markdown(## 標題、- 清單、**粗體**、可用表格)。"
     "結構：## 核心洞見與操作建議(≤10 條，每條＝個股代號名稱 ｜ 共振訊號 ｜ 數據依據 ｜ 方向與進出建議；大型股≤一半)／## 訊號邏輯(簡述同向共振推論)。不要有背離段落。"
@@ -679,7 +679,7 @@ SYS_NEWS = (
     "(4) 每條洞見／建議必須點名個股代號＋可追溯的具體依據(新聞標題與日期、法人買賣超數字、連買天數等)，禁止空泛臆測。"
     "(5) 洞見與建議合計不超過 10 條，挑共振最強、依據最紮實的。"
     "(6) 建議個股以 alpha 為首要考量，優先納入中小型標的；大型權值股(台灣50成分、2330台積電/2317鴻海/2454聯發科、金控股等)合計不得超過清單一半——上限而非目標，不必硬湊。"
-    "(7) 新聞僅代表資訊面、非事實核實，判讀須註明消息面屬性；美股與晨報資料若與主資料日不同，僅可單獨解讀、嚴禁跨日串連成訊號。"
+    "(7) 新聞僅代表資訊面、非事實核實，判讀須註明消息面屬性；美股與晨報資料若與主資料日不同，可與其他資料串連解讀，但須標注各段自己的資料日、並註明該串連跨越不同交易日。"
     "(8) 繁體中文、markdown(## 標題、- 清單、**粗體**、可用表格)。"
     "結構：## 核心洞見與操作建議(≤10 條，每條＝個股代號名稱 ｜ 共振訊號 ｜ 依據 ｜ 方向與進出建議；大型股≤一半)／## 訊號邏輯(簡述共振推論)。"
     "不要有背離段落。最後一行附免責：以上為新聞與籌碼交叉的模型即時研判、未經歷史回測、非投資建議、非保證獲利，僅供你自行參考。"
@@ -693,8 +693,8 @@ SYS_SYNTH = (
     "(2)對精選標的明確給出：方向預測（偏多/偏空）、進出建議（進場條件/出場條件/停損思路）、投資建議與部位思路。"
     "(3)每檔標的附跨份依據摘要（哪幾份、什麼數據）。"
     "(4)大型權值股≤清單一半（上限非目標）。"
-    "(5)精選標的沿用相同的『當日成交量 ≥ 1,000 張』門檻——量能依據須出現在子分析引用的帶量數據中，量能未知者不得入選。"
-    "(6)6 份分析若日期標注不同資料日，嚴禁跨日串連。"
+    "(5)精選標的若子分析引用了帶量數據，沿用『當日成交量 ≥ 1,000 張』門檻；來自即時類股動態或新聞晨報、本無個股級成交量佐證者不受此限，可納入選評，但須於依據摘要標注『量能未知』。"
+    "(6)6 份分析若日期標注不同資料日，原則上嚴禁跨日串連；唯新聞晨報（含美股）的資料日不受此限，可與其他資料串連，但須標注其資料日。"
     "(7)結構：## 精華 alpha 標的（≤6 檔，每檔＝代號名稱｜共振強度(N/6份提及)｜方向預測｜進出建議｜依據摘要）"
     "／## 盤勢綜合研判（≤5行）／## 分析分歧備註（兩次獨立分析結論明顯不同處，1-3行，無則免）。"
     "繁體中文 markdown。最後附免責：以上為多模型彙總之即時研判、未經歷史回測、非保證獲利，投資盈虧自負，僅供你自行參考。"
@@ -722,10 +722,16 @@ def call_claude(model: str, system: str, user_msg: str) -> dict:
     j = r.json()
     if not r.ok or j.get("type") == "error":
         raise RuntimeError((j.get("error") or {}).get("message") or f"HTTP {r.status_code}")
-    if j.get("stop_reason") == "refusal":
+    stop = j.get("stop_reason")
+    if stop == "refusal":
         raise RuntimeError("模型基於安全政策婉拒本次請求")
     text = "\n".join(b.get("text", "") for b in (j.get("content") or []) if b.get("type") == "text")
-    return {"text": text, "usage": j.get("usage")}
+    # adaptive thinking 吃滿 max_tokens 時只回 thinking block、沒有 text block，text 會靜靜落成
+    # 空字串並以 ok:true 進彙總（2026-07-27 自動場：6 份中 3 份 output=8000/thinking≈8000、
+    # text 為空，彙總層只好自行宣告「為空白」）。當失敗丟出交給 retry，仍空則落 ok:false 佔位。
+    if not text.strip():
+        raise RuntimeError(f"回應無 text 內容（stop_reason={stop}），可能是 thinking 佔滿 max_tokens")
+    return {"text": text, "stop_reason": stop, "usage": j.get("usage")}
 
 
 def call_claude_retry(model: str, system: str, user_msg: str, label: str) -> dict:
@@ -741,7 +747,7 @@ def call_claude_retry(model: str, system: str, user_msg: str, label: str) -> dic
             print(f"  ✗ {label} 第{attempt}次失敗：{e}", flush=True)
             if attempt == 1:
                 time.sleep(5)
-    return {"ok": False, "text": f"（該份產出失敗：{last}）", "usage": None}
+    return {"ok": False, "text": f"（該份產出失敗：{last}）", "stop_reason": None, "usage": None}
 
 
 # ---------- 資料齊全閘門 ----------
@@ -1008,7 +1014,8 @@ def build_contexts(src: dict) -> list[dict]:
     # 頁面3：新聞晨報
     g3 = gather_news(src["news"], src["morning"], src["us"])
     user3 = (f"主資料日（以此為準）：{g3['primary']}\n各段資料日：{dates_json(g3['dates'])}\n"
-             f"（凡標注「與主資料日不同」的段落，僅可單獨解讀，勿跨日比較）\n\n{g3['text']}")
+             f"（凡標注「與主資料日不同」的段落，可與其他資料串連解讀，"
+             f"但須標注該段資料日、並註明該串連跨越不同交易日）\n\n{g3['text']}")
     pages.append({"page": "新聞晨報", "sys": SYS_NEWS, "user": user3,
                   "primary": g3["primary"], "empty": not g3["text"].strip()})
 
@@ -1062,7 +1069,8 @@ def main() -> None:
         label = f"{p['page']}×{tag}"
         if p["empty"]:
             return {"page": p["page"], "model": model, "tag": tag, "date": p["primary"],
-                    "ok": False, "text": "（該份產出失敗：資料源載入失敗，context 為空）", "usage": None}
+                    "ok": False, "text": "（該份產出失敗：資料源載入失敗，context 為空）",
+                    "stop_reason": None, "usage": None}
         res = call_claude_retry(model, p["sys"], p["user"], label)
         return {"page": p["page"], "model": model, "tag": tag, "date": p["primary"], **res}
 

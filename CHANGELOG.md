@@ -3,6 +3,26 @@
 帶日期的變更紀錄從 README「快速接手」搬出集中於此（2026-07-24 起）；
 更早的逐日歷史見 git log。常青的架構／口徑／教訓說明仍在 README。
 
+## 2026-07-27 彙總分析：空回應攔截 + 三條 SYS 規則放寬
+
+- **修 bug：AI 空回應未攔截**。adaptive thinking 吃滿 `max_tokens:8000` 時回應只有 thinking block、
+  沒有 text block，`callClaude`／`call_claude` 都把它當成功回傳空字串，以 `ok:true` 進彙總
+  （2026-07-27 pm 場：6 份中 3 份 `output_tokens=8000`／`thinking≈8000`、`text` 為空，
+  `ok_n=6` 通過 `MIN_OK_FOR_SYNTH=3` 檢查，彙總層只好自行宣告「本日 6 份中…為空白」）。
+  現在空白（含全空白字元）視為失敗丟出：自動場交給既有 retry，仍空則落 `ok:false` 佔位；
+  前端無重試故直接落 `ok:false`。回傳值一併保留 `stop_reason` 並寫進 `six[]` 供事後判讀。
+  三站 `callClaude` 逐字同步（postmkt／taiwan-flow-live-v2／taiwan-stock-news）。
+- **SYS 規則放寬三條**（原本模型在缺料時自行放寬、與 prompt 明文相牴觸，改為寫成明確規則）：
+  `SYS_LIVE (7)` 個股成交量只出現在「個股盤中資金集中 前15」段的「量X張」、該段無資料時整段略過，
+  故不硬性套用 1,000 張門檻，查不到量能者可入選但須標注「量能未知」；
+  `SYS_NEWS (7)` 美股／晨報資料日與主資料日不同時，由「嚴禁跨日串連」改為可串連但須標注資料日
+  （**USER prompt 需一併改**：原 `sumUserNews = sumUserPostmkt` 別名共用同一條「僅可單獨解讀，勿跨日
+  比較」，會與放寬後的 SYS 打架；已拆成獨立模板，三份副本措辭一致）；
+  `SYS_SYNTH (5)(6)` 彙總層同步鬆綁量能門檻與跨日禁令（新聞晨報資料日不受跨日限制）。
+  `SYS_POSTMKT (7)(9)` **不動**——盤後分析頁本身有成交量資料，門檻與日期對齊維持原樣。
+- 新增 `tests/test_summary_call.py`（10 支）：空回應／retry 行為，外加 SYS prompt 在
+  `index.html` ↔ `build_summary.py` 兩份副本的逐字一致性守門（此路徑原本零測試覆蓋）。
+
 ## 2026-07-24 專案優化批次（三輪）
 
 - cache.json（~3MB 增量快取）移出 git 改走 actions/cache；diag/mktbal 資料改懶載（首屏傳輸減半）；
