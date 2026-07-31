@@ -441,49 +441,130 @@ def build_daytrading(date: str, rows: list, price_rows: list, nm: dict) -> dict:
     return {"date": date, "by_amount": by_amount}
 
 
-def block_trader_map(date: str) -> dict:
-    """TaiwanStockBlockTradingDailyReport：同一筆鉅額交易的買方/賣方券商分點各一列
-    （buy=量代表買方、sell=量代表賣方），用(股票,價格)分組後嘗試唯一匹配對應
-    TaiwanStockBlockTrade的每一筆量。只在買賣雙方各剛好一筆候選時採用，
-    避免同股同價當天多筆交易時誤配（該dataset僅2026-04-28起有資料，之前日期查無）。
+def block_trader_map(date: str) -> list:
+    """TaiwanStockBlockTradingDailyReport 原始列：每列是某券商當日於該價位的買/賣『總量』
+    （買賣分開兩列，非零的一邊代表方向），交由 _match_block_group() 依(股票,價格)分組後
+    解「多重子集和分割」，還原每一筆 TaiwanStockBlockTrade 對應的買賣方券商分點
+    （該dataset僅2026-04-28起有資料，之前日期查無）。
     """
     try:
-        rows = api_get("TaiwanStockBlockTradingDailyReport", start_date=date, end_date=date)
+        return api_get("TaiwanStockBlockTradingDailyReport", start_date=date, end_date=date)
     except Exception as e:
         print(f"券商分點資料抓取失敗（不影響其餘欄位）：{e}", flush=True)
+        return []
+
+
+# 單一(股票,價格)分組內的候選券商數上限：超過才會放棄自動配對（改留白），
+# 避免子集和窮舉在極端情況下組合爆炸；實務上單一股票單一價位一天的鉅額筆數/券商數都很小。
+MAX_MATCH_DEALERS = 12
+
+
+def _partition_assignments(targets: list[float], dealers: list[tuple[str, float]]) -> list[list[list[str]]]:
+    """窮舉所有把dealers切分給len(targets)筆交易、各組總量剛好等於對應targets[i]的合法分割
+    （不要求用完所有dealers，允許有剩餘未被任何一筆交易用到）。回傳每個分割＝長度n的list，
+    每個元素是該筆交易對應到的券商名單（可能多個、代表合力承接同一筆）。"""
+    n = len(targets)
+    if n == 0:
+        return []
+    m = len(dealers)
+    used = [False] * m
+    groups: list[list[str]] = [[] for _ in range(n)]
+    solutions: list[list[list[str]]] = []
+
+    def fill(gi: int, remaining: float, start: int) -> None:
+        if remaining < -0.5:
+            return
+        if remaining < 0.5:
+            if gi == n - 1:
+                solutions.append([list(g) for g in groups])
+            else:
+                fill(gi + 1, targets[gi + 1], 0)
+            return
+        for j in range(start, m):
+            if used[j]:
+                continue
+            name, vol = dealers[j]
+            used[j] = True
+            groups[gi].append(name)
+            fill(gi, remaining - vol, j + 1)
+            groups[gi].pop()
+            used[j] = False
+
+    fill(0, targets[0], 0)
+    return solutions
+
+
+def _match_block_group(target_vols: list[float], dealers: list[tuple[str, float]]) -> dict[int, str]:
+    """對單一(股票,價格)分組解買方或賣方其中一側的配對，回傳{該分組內索引: 券商名(可能用、
+    連接多個)}，只包含在所有合法分割中都得到相同結果、可唯一還原的位置；有歧義或找不到解的
+    位置一律不放進回傳值（維持留白）。"""
+    n = len(target_vols)
+    if n == 0 or not dealers or n > MAX_MATCH_DEALERS or len(dealers) > MAX_MATCH_DEALERS:
         return {}
-    by_sp: dict[tuple, list] = {}
-    for r in rows:
-        key = (r.get("stock_id"), r.get("price"))
-        by_sp.setdefault(key, []).append(r)
-    return by_sp
+    if len(dealers) == 1:
+        # 該側當天在這個(股票,價格)只有唯一一個候選券商：沒有其他候選可能，理論上該側全部
+        # 交易量都是它的（同一分點當天分多筆申報時，子集和分割因不允許同一券商跨組使用，
+        # 無法表達這種情況，須在此單獨處理）。但仍要求量能兜起來才採用，兜不起來代表
+        # DailyReport在這個(股票,價格)本身就不完整，不能貿然歸給唯一候選。
+        name, vol = dealers[0]
+        if abs(vol - sum(target_vols)) < 0.5:
+            return {pos: name for pos in range(n)}
+        return {}
+    solutions = _partition_assignments(target_vols, dealers)
+    if not solutions:
+        return {}
+    out: dict[int, str] = {}
+    for pos in range(n):
+        first = frozenset(solutions[0][pos])
+        if first and all(frozenset(sol[pos]) == first for sol in solutions):
+            out[pos] = "、".join(sorted(first))
+    return out
 
 
-def build_blocktrade(date: str, rows: list, nm: dict) -> dict:
+def build_blocktrade(date: str, rows: list, nm: dict, report_rows: list | None = None) -> dict:
     """鉅額交易：依股票分組（組內依金額排序、組間依該股當日總金額排序），
-    每列附上同股票當日總張數/總金額，並嘗試附上買方/賣方券商分點。"""
-    trader_map = block_trader_map(date) if date else {}
+    每列附上同股票當日總張數/總金額，並嘗試附上買方/賣方券商分點
+    （用 TaiwanStockBlockTradingDailyReport 依(股票,價格)分組解子集和分割，
+    涵蓋1對1／1對多／多對1／多對多，只在唯一可還原時才填入）。"""
+    dealers_by_key: dict[tuple, dict[str, list[tuple[str, float]]]] = {}
+    for r in (report_rows or []):
+        key = (r.get("stock_id"), r.get("price"))
+        d = dealers_by_key.setdefault(key, {"buy": [], "sell": []})
+        name = r.get("securities_trader") or ""
+        buy, sell = r.get("buy") or 0, r.get("sell") or 0
+        if buy:
+            d["buy"].append((name, buy))
+        if sell:
+            d["sell"].append((name, sell))
+
     items = []
+    key_of_index: list[tuple] = []
     for r in rows:
         c = r.get("stock_id", "")
-        vol = r.get("volume") or 0
         price = r.get("price")
-        buy_trader = sell_trader = None
-        cands = trader_map.get((c, price), [])
-        buyers = [x for x in cands if x.get("buy") == vol]
-        sellers = [x for x in cands if x.get("sell") == vol]
-        if len(buyers) == 1:
-            buy_trader = buyers[0].get("securities_trader")
-        if len(sellers) == 1:
-            sell_trader = sellers[0].get("securities_trader")
         items.append({
             "c": c, "n": nm.get(c, ""),
             "type": r.get("trade_type", ""),
             "price": price,
-            "vol": vol,
+            "vol": r.get("volume") or 0,
             "money": r.get("trading_money") or 0,
-            "buy_trader": buy_trader, "sell_trader": sell_trader,
+            "buy_trader": None, "sell_trader": None,
         })
+        key_of_index.append((c, price))
+
+    by_key: dict[tuple, list[int]] = {}
+    for idx, key in enumerate(key_of_index):
+        by_key.setdefault(key, []).append(idx)
+
+    for key, idxs in by_key.items():
+        dealers = dealers_by_key.get(key)
+        if not dealers:
+            continue
+        vols = [items[i]["vol"] for i in idxs]
+        for pos, name in _match_block_group(vols, dealers["buy"]).items():
+            items[idxs[pos]]["buy_trader"] = name
+        for pos, name in _match_block_group(vols, dealers["sell"]).items():
+            items[idxs[pos]]["sell_trader"] = name
 
     by_stock: dict[str, list] = {}
     for it in items:
@@ -511,6 +592,7 @@ def main() -> None:
     d_short, r_short = fetch_latest("TaiwanDailyShortSaleBalances", today)
     d_dt, r_dt, r_price = fetch_daytrading(today)
     d_block, r_block = fetch_latest("TaiwanStockBlockTrade", today)
+    r_block_report = block_trader_map(d_block) if d_block else []
     d_inst, r_inst = fetch_latest("TaiwanStockInstitutionalInvestorsBuySell", today)
     d_hold, r_hold = fetch_latest("TaiwanStockShareholding", today)
     d_oddi, r_oddi = fetch_twse_oddlot(today, "TWTC7U")
@@ -542,7 +624,7 @@ def main() -> None:
         "lending": build_lending(lend_date, r_lend, r_margin, r_short, r_dt, d_dt, r_price_lend, r_inst, r_hold, nm),
         "short_balance": build_short_balance(d_short, r_short, nm),
         "daytrading": build_daytrading(d_dt, r_dt, r_price, nm),
-        "blocktrade": build_blocktrade(d_block, r_block, nm),
+        "blocktrade": build_blocktrade(d_block, r_block, nm, r_block_report),
         "oddlot": build_oddlot(d_oddi, r_oddi, d_odda, r_odda),
         # 分點互動查詢（個股/單點）由前端直呼FinMind（TradingDailyReport 21:00更新，
         # 跟當沖同源），預設查詢日跟當沖對齊
