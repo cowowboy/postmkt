@@ -3,7 +3,7 @@
 台股盤後資料的靜態儀表板（單一 `index.html`，無 build 工具），
 是[股市雷達 Hub](https://shihpc.github.io/) 的子站之一。
 
-## 十一個 Tab（2026-07-19 加「大盤餘額」後）
+## 十二個 Tab（2026-08-11 加「輪動雷達」後）
 
 | Tab | 資料源 | 內容 |
 |---|---|---|
@@ -16,6 +16,7 @@
 | 零股 | TWSE `TWTC7U`（盤中）/`TWT53U`（盤後），公開端點免金鑰 | 盤中/盤後兩子標籤，個股成交股數/筆數/金額 |
 | 分點 | FinMind `TaiwanSecuritiesTraderInfo`＋`TradingDailyReport` 專屬 endpoint | 單點（查分點進出個股）/個股（查個股進出分點）/清單（1010 分點模糊查找） |
 | 大盤餘額 | FinMind `TaiwanStockTotalMarginPurchaseShortSale`（融資/融券）＋ TWSE `TWT72U`（借券賣出，SLB+NLB整體市場相加）＋ TWSE `TWTA1U`（不限用途借貸，6 selectType加總） | 全市場層級四項餘額合計（融資/融券/借券賣出/不限用途款項借貸），4 pill 切換，近5日逐日＋近3年各月底（年列可展開），與「融借券」tab（個股排行）明確區分定位 |
+| 輪動雷達 | taiwan-flow-live-v2 `data/chain_daily/series.json`（跨 repo 唯讀，594KB 懶載，283 交易日 × 47 條產業鏈日頻序列，每交易日夜間增量更新） | 盤後日頻 RRG（B-ew 軸：等權報酬相對大盤等權基準，n=12 z-score／k=10 動能）：47 鏈散點＋成交額 Top10 錨點軌跡尾巴、日期回看、候補清單（改善／領先象限，持續性 N=3 完整列出）、新鮮度提示；描述語氣、附成員重疊揭露與盤中版互連 |
 | 日期 | 即時 fetch 八個資料源的 date/generated_at | 全專案資料日期總覽：各源資料日/產出時間(台北,到分)/新鮮度狀態（最新/落後N個交易日，僅排除週末、國定假日不扣），一眼看清哪些資料到今天 |
 | 持股診斷 | `data/diag/diag.json`（`src/build_diag.py` 夜間管線）＋ v2 `/live` 現價＋ taiwan-stock-news 新聞 | 輸入持股（僅存 localStorage）→ 逐檔五面向（籌碼/價量/題材/基本面/系統）紅黃綠燈號＋事實清單＋組合層檢查＋近3日新聞命中＋可選 AI 解讀 |
 
@@ -70,6 +71,31 @@
 
 帶日期的歷次變更紀錄已搬到 [`CHANGELOG.md`](CHANGELOG.md)（2026-07-24 起）；
 本節只留接手需要的常青內容（各 tab 口徑、資料流、教訓、維護約定）。
+
+### 輪動雷達 tab（2026-08-11 上線）
+
+- **口徑（第二階段定案，不得單方更改）**：B-ew＝價格版 RRG × 等權報酬。X 軸 RS-Ratio＝
+  鏈等權報酬指數 ÷ 大盤等權報酬指數（RS）再做 12 日窗 z-score（100＋標準差倍數）；
+  Y 軸 RS-Momentum＝RS-Ratio 的 10 日 ROC 再做同法 z-score。象限 100/100 分界、不做中位置中，
+  右上起順時針＝領先／轉弱／落後／改善。候補清單（改善＝「資金剛輪入」、領先＝「動能領先」）
+  套持續性 N=3（連續 3 日在該象限才列入），完整列出不設上限，排序 RS-Momentum 遞減。
+- **公式正本**：taiwan-flow-live-v2 `backtest/run_rrg_daily_axes.py` 的 `axis_systems`
+  （`price_coords` 分支）。前端 `index.html` 的 `RRGD-PURE` 註解區塊逐式重現（含 `cum_index`
+  開頭缺值當 0／中間缺值截斷、樣本標準差 ddof=1、SD=0 回 null 等細節），改公式必須兩邊同步
+  並重跑對拍（抽 3 日期 × 47 鏈，(x,y) 誤差 <1e-6；2026-08-11 實測最大誤差 5.7e-14）。
+- **文案紀律**：該專案回測結論為前瞻超額六種切法 0/12 顯著——資料不支持任何買賣建議，
+  全 tab 描述語氣；頁尾固定附回測依據句、成員重疊揭露（一塊錢平均被算進 2.24 條鏈；
+  14 條鏈成交額 100% 來自同時屬於其他鏈的成員）與「盤中版 →」互連（兩者軸定義不同）。
+- **前端**：插入式改動，命名全用 `rrgd*` 前綴——`TABS`／`SUBS`／`state`（rrgd/rrgdErr/
+  rrgdLoading/rrgdIdx）／`render()` 分派／`renderStats()` 各一處；`ensureChainDaily()` 懶載
+  （比照 `ensureMktbal()`，594KB 不進首屏），載入後 `rrgdPrep()` 驗格式＋算好座標放模組層
+  `RRGD` 快取，格式異常 throw 走 `rrgdErr` 降級文案（fetch 失敗同路徑），不壞其他 tab。
+  畫布為純 SVG 字串（`rrgdSvg()`，零外部依賴），880px 單欄圖上清單下。日期選擇：
+  `#rrgdSel` 下拉（change 委派）＋ `data-rrgdstep` 前後鍵（click 委派），只列可算出座標的
+  日期（`valid_idx` 同式：當日至少半數鏈有座標）。新鮮度：`rrgdLagDays()` 以平日粗略計，
+  落後今日 >3 平日顯示「資料未更新」（上游＝v2 baseline 班掛的增量更新，斷了這裡看得出來）。
+- **未解／待觀察**：錨點標名未做碰撞避讓，點密集日可能重疊；新鮮度以平日近似、
+  國定假日連假可能誤報 1-2 日（與「日期」tab 的 `dayDiff` 同一已知近似）。
 
 ### 大盤餘額 tab（2026-07-19 上線）
 

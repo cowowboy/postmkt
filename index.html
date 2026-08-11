@@ -263,7 +263,7 @@ const TABS = [
   ["summary","彙總分析"],
   ["aetf","主動ETF"],["lending","融借券"],["daytrade","當沖"],
   ["block","鉅額"],["oddlot","零股"],["broker","分點"],["mktbal","大盤餘額"],
-  ["diag","持股診斷"],["dates","日期"],
+  ["rrgd","輪動雷達"],["diag","持股診斷"],["dates","日期"],
 ];
 const SUBS = {
   insight:"AI 摘要分析：彙整本頁各 tab 資料（主動ETF／三大法人買賣超／融借券／當沖／鉅額／零股盤中／指定分點），由 Claude 生成以查找 alpha 標的為目標的洞見。前端即時呼叫，token 由你自備、只存本機瀏覽器。非投資建議、非預測，僅描述歷史統計傾向。",
@@ -275,6 +275,7 @@ const SUBS = {
   oddlot:"零股交易行情（TWSE公開端點）：盤中零股／盤後零股，依個股呈現成交股數、筆數、金額。單位：股／元。",
   broker:"券商分點進出（FinMind TradingDailyReport，每交易日約21:00更新）。單點＝查一個分點當日全部進出個股；個股＝查一檔股票當日全部進出分點；清單＝全部分點代號對照。",
   mktbal:"大盤層級籌碼餘額：融資餘額（源自FinMind）／借券賣出餘額（源自TWSE公開端點）兩項全市場合計金額，非個股加總排行——個股層級請見「融借券」tab；融券與不限用途款項借貸因官方無金額統計不列。近30交易日逐日＋近3年各月底（年列可展開）。",
+  rrgd:"盤後日頻產業輪動雷達（RRG-Daily）：47 條產業鏈的相對輪動圖。X 軸 RS-Ratio＝鏈等權報酬指數相對大盤等權基準的相對強度（12 日窗 z-score 標準化，100 為中性）；Y 軸 RS-Momentum＝RS-Ratio 的 10 日變化率再做同法標準化。資料源 taiwan-flow-live-v2 data/chain_daily（每交易日夜間增量更新）。僅描述各鏈相對大盤的歷史位置與變化；回測顯示象限轉換對未來報酬無顯著預測力，非投資建議。",
   dates:"各資料源目前的資料日與產出時間；判斷哪些已是最新交易日、哪些尚未更新。資料為排程產出，當日盤後資料通常於當晚 21:00 後才更新，故白天多半看到前一交易日。",
   diag:"持股診斷：輸入持股後逐檔彙整籌碼／價量／題材／基本面／系統五面向事實與紅黃綠風險燈號，附近3日新聞命中與可選的 AI 解讀（按了才呼叫、token 自備）。證據彙整工具、非投資建議，不輸出買賣指令；持股資料僅存於本機瀏覽器（localStorage），不上傳任何伺服器。素材庫每交易日約 22:10 更新（全市場通用資料）。",
 };
@@ -294,7 +295,8 @@ const state = { tab:"insight", openEtf:null, openSub:null, openLend:null, lendQu
   diag:null, diagErr:null, diagLoading:false, diagLive:undefined, diagOpen:null, diagRulesOpen:false, diagMsg:"",
   diagNews:undefined, diagAI:null,
   aetfCmpOpen:false, aetfCmpMore:{},
-  mktbal:null, mktbalErr:null, mktbalLoading:false, mktbalSel:"margin", mktbalOpen:{} };
+  mktbal:null, mktbalErr:null, mktbalLoading:false, mktbalSel:"margin", mktbalOpen:{},
+  rrgd:null, rrgdErr:null, rrgdLoading:false, rrgdIdx:null };
 
 const esc = s => String(s==null?"":s).replace(/[&<>"']/g,
   c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
@@ -1176,6 +1178,11 @@ function renderStats(){
     const d = state.mktbal;
     el.innerHTML = d ? `<div class="stat">資料日 <b>${esc(d.latest_date||"—")}</b></div>`
       + `<div class="stat">更新 ${esc(fmtGenTaipei(d.generated_at))}（台灣）</div>` : "";
+  } else if (state.tab === "rrgd"){
+    // 同 mktbal：有自己資料日的 tab 不借用 postmkt 的資料日
+    const j = state.rrgd;
+    el.innerHTML = j ? `<div class="stat">資料至 <b>${esc(j.dates[j.dates.length-1]||"—")}</b></div>`
+      + `<div class="stat"><b>${Object.keys(j.chains||{}).length}</b> 條產業鏈</div>` : "";
   } else if (state.tab === "diag"){
     const dg = state.diag;
     el.innerHTML = dg ? `<div class="stat">素材庫資料日 <b>${esc(dg.date||"—")}</b></div>`
@@ -1202,6 +1209,7 @@ function render(){
   if (state.tab === "dates") renderDates();
   else if (state.tab === "aetf") renderAETF();
   else if (state.tab === "mktbal"){ ensureMktbal(); renderMktbal(); }
+  else if (state.tab === "rrgd"){ ensureChainDaily(); renderRrgd(); }
   else { if (state.tab === "diag") ensureDiag(); renderPM(); }
 }
 function renderTabs(){
@@ -1431,6 +1439,272 @@ function renderMktbal(){
     + sec("近3年各月底", "年列可展開／收合月列 · YoY／MoM 紅漲綠跌 · 年列 YoY 為年末值對年末值的近似比較（非交易日對齊）")
     + monthlyTable;
 }
+
+// ---------- 輪動雷達（盤後日頻 RRG，B-ew 軸） ----------
+// 軸與參數為第二階段定案（不得更改）：價格版 RRG × 等權報酬、n=12、k=10、候補清單持續性 N=3。
+// 公式正本＝taiwan-flow-live-v2/backtest/run_rrg_daily_axes.py 的 axis_systems（price_coords 分支），
+// 下方 RRGD-PURE 區塊逐式重現並以 Node 對拍腳本驗證（抽 3 日期 × 47 鏈，誤差 <1e-6）。
+// 回測結論：前瞻超額六種切法 0/12 顯著（backtest/report_rrg_daily_axes.md）——
+// 資料不支持任何買賣建議，本 tab 全程描述語氣。
+// RRGD-PURE-BEGIN（此區塊只含純函式，Node 對拍腳本整段抽出執行；勿加 DOM 依賴）
+const RRGD_N = 12, RRGD_K = 10, RRGD_PERSIST = 3, RRGD_TAIL = 10, RRGD_ANCHORS = 10;
+// 日報酬逐日連乘成指數。第一格＝base；開頭連續缺值當 0（指數停在 base），
+// 中間缺值才截斷成 None——與 Python 版 cum_index 的規則逐字對齊（分母常數會被 z-score 吸收）。
+function rrgdCumIndex(rets, base){
+  const out = []; let v = (base==null?100:base), broken = false, started = false;
+  for (const r of rets){
+    if (broken){ out.push(null); continue; }
+    out.push(v);
+    if (r == null){ if (started) broken = true; continue; }
+    started = true;
+    v *= (1 + r);
+  }
+  return out;
+}
+// 含當期的 n 期平均與樣本標準差（ddof=1）；窗內任一缺值 → null（＝Python roll_mean_sd）
+function rrgdRollMeanSd(xs, n){
+  const mu = new Array(xs.length).fill(null), sd = new Array(xs.length).fill(null);
+  for (let t = n - 1; t < xs.length; t++){
+    const w = xs.slice(t - n + 1, t + 1);
+    if (w.some(v => v == null)) continue;
+    let m = 0; for (const v of w) m += v; m /= n;
+    mu[t] = m;
+    let s = 0; for (const v of w) s += (v - m) * (v - m);
+    sd[t] = n > 1 ? Math.sqrt(s / (n - 1)) : 0;
+  }
+  return [mu, sd];
+}
+// JdK 式標準化：100 + (x − MA_n)/SD_n；SD=0 → null（＝Python zscore100）
+function rrgdZscore100(xs, n){
+  const [mu, sd] = rrgdRollMeanSd(xs, n);
+  const out = new Array(xs.length).fill(null);
+  for (let t = 0; t < xs.length; t++){
+    if (xs[t] == null || mu[t] == null || !sd[t]) continue;
+    out[t] = 100 + (xs[t] - mu[t]) / sd[t];
+  }
+  return out;
+}
+// B 價格版座標（＝Python price_coords）：RS=100×鏈指數/大盤指數 → z-score(n) →
+// ROC(k) → z-score(n)。回 {chain: [(x,y)|null]}。
+function rrgdPriceCoords(chainRets, benchRet, n, k){
+  const bi = rrgdCumIndex(benchRet);
+  const out = {};
+  for (const name of Object.keys(chainRets)){
+    const ci = rrgdCumIndex(chainRets[name]);
+    const rs = ci.map((v, t) => (v == null || !bi[t]) ? null : 100 * v / bi[t]);
+    const rat = rrgdZscore100(rs, n);
+    const roc = rat.map((v, t) => (t < k || v == null || !rat[t - k]) ? null : 100 * (v / rat[t - k] - 1));
+    const mom = rrgdZscore100(roc, n);
+    out[name] = rat.map((v, t) => (v == null || mom[t] == null) ? null : [v, mom[t]]);
+  }
+  return out;
+}
+// 象限（＝backtest/run_rrg.py 的 quad；不做中位置中）
+function rrgdQuad(r, m){
+  if (r >= 100) return m >= 100 ? "領先" : "轉弱";
+  return m >= 100 ? "改善" : "落後";
+}
+// 持續性 N：連續 n 日（含當日）都在象限 q 才進榜；排序＝RS-Momentum 遞減、同值按名稱
+// （比照 run_rrg_daily_axes.py 的 improving_top 排序語意）
+function rrgdPersistList(coords, t, q, n){
+  const out = [];
+  for (const name of Object.keys(coords)){
+    const arr = coords[name];
+    let ok = true;
+    for (let j = 0; j < n; j++){
+      const i = t - j;
+      if (i < 0 || !arr[i] || rrgdQuad(arr[i][0], arr[i][1]) !== q){ ok = false; break; }
+    }
+    if (ok) out.push(name);
+  }
+  out.sort((a, b) => (coords[b][t][1] - coords[a][t][1]) || (a < b ? -1 : a > b ? 1 : 0));
+  return out;
+}
+// 資料落後幾個「平日」（只排除週六日，國定假日不扣，同 dayDiff 的已知近似）
+function rrgdLagDays(today, last){
+  const DAY = 86400000, end = Date.parse(today + "T00:00:00Z");
+  let n = 0;
+  for (let t = Date.parse(last + "T00:00:00Z") + DAY; t <= end; t += DAY){
+    const w = new Date(t).getUTCDay();
+    if (w !== 0 && w !== 6) n++;
+  }
+  return n;
+}
+// 載入後驗證格式並算好座標與有效日（格式異常 throw → 降級文案）。回 {coords, valid, names}
+function rrgdPrep(j){
+  if (!j || !Array.isArray(j.dates) || !j.dates.length || !j.chains || typeof j.chains !== "object"
+      || !j.market || !Array.isArray(j.market.ret_ew))
+    throw new Error("series.json 格式異常（缺 dates／chains／market.ret_ew）");
+  const T = j.dates.length, rets = {};
+  for (const name of Object.keys(j.chains)){
+    const c = j.chains[name];
+    if (!c || !Array.isArray(c.ret_ew) || c.ret_ew.length !== T)
+      throw new Error("series.json 格式異常（鏈「" + name + "」的 ret_ew 長度不符）");
+    rets[name] = c.ret_ew;
+  }
+  const coords = rrgdPriceCoords(rets, j.market.ret_ew, RRGD_N, RRGD_K);
+  const names = Object.keys(coords);
+  const need = Math.max(2, Math.floor(names.length / 2));   // ＝Python valid_idx
+  const valid = [];
+  for (let t = 0; t < T; t++){
+    let cnt = 0;
+    for (const nm of names) if (coords[nm][t]) cnt++;
+    if (cnt >= need) valid.push(t);
+  }
+  if (!valid.length) throw new Error("series.json 資料不足：無任何日期可算出座標");
+  return { coords, valid, names };
+}
+// RRGD-PURE-END
+const RRGD = { coords: null, valid: null, names: null };   // rrgdPrep 產物快取（隨 state.rrgd 一起生滅）
+const RRGD_QCOL = { "領先": "#ef5b5b", "轉弱": "#4f9cff", "落後": "#2fbf71", "改善": "#e8b339" };
+const rrgdSelT = () => {
+  const v = RRGD.valid;
+  return (state.rrgdIdx != null && v.indexOf(state.rrgdIdx) >= 0) ? state.rrgdIdx : v[v.length - 1];
+};
+// 當日成交額 Top N 錨點（畫布一律標名＋軌跡尾巴；其餘淡化、hover 可見）
+function rrgdAnchors(j, t){
+  const rows = RRGD.names.map(nm => [((j.chains[nm].amt || [])[t]) || 0, nm]);
+  rows.sort((a, b) => (b[0] - a[0]) || (a[1] < b[1] ? -1 : 1));
+  return new Set(rows.slice(0, RRGD_ANCHORS).map(r => r[1]));
+}
+function rrgdSvg(j, t){
+  const coords = RRGD.coords, anchors = rrgdAnchors(j, t);
+  // 尾巴：選定日往回取最多 RRGD_TAIL+1 個有座標的點（時間升序）
+  const tails = {};
+  for (const nm of RRGD.names){
+    if (!anchors.has(nm) || !coords[nm][t]) continue;
+    const pts = [];
+    for (let i = t; i >= 0 && pts.length < RRGD_TAIL + 1; i--)
+      if (coords[nm][i]) pts.unshift([coords[nm][i][0], coords[nm][i][1]]);
+    tails[nm] = pts;
+  }
+  // 座標範圍：當日全部點＋錨點尾巴；保證 100/100 在圖內
+  let xs = [99, 101], ys = [99, 101];
+  for (const nm of RRGD.names){
+    const c = coords[nm][t];
+    if (c){ xs.push(c[0]); ys.push(c[1]); }
+  }
+  for (const nm of Object.keys(tails)) for (const p of tails[nm]){ xs.push(p[0]); ys.push(p[1]); }
+  const pad = 0.4;
+  const x0 = Math.min.apply(null, xs) - pad, x1 = Math.max.apply(null, xs) + pad;
+  const y0 = Math.min.apply(null, ys) - pad, y1 = Math.max.apply(null, ys) + pad;
+  const W = 840, H = 540, ML = 46, MR = 14, MT = 16, MB = 34;
+  const sx = v => ML + (v - x0) / (x1 - x0) * (W - ML - MR);
+  const sy = v => MT + (y1 - v) / (y1 - y0) * (H - MT - MB);
+  const cx = sx(100), cy = sy(100);
+  let s = `<svg viewBox="0 0 ${W} ${H}" xmlns="http://www.w3.org/2000/svg" role="img" `
+    + `style="width:100%;max-width:860px;height:auto;display:block;margin:0 auto">`;
+  // 象限底色（右上起順時針：領先／轉弱／落後／改善）
+  const Q = [["領先", cx, MT, W - MR - cx, cy - MT], ["轉弱", cx, cy, W - MR - cx, H - MB - cy],
+             ["落後", ML, cy, cx - ML, H - MB - cy], ["改善", ML, MT, cx - ML, cy - MT]];
+  for (const [q, qx, qy, qw, qh] of Q)
+    s += `<rect x="${qx}" y="${qy}" width="${Math.max(qw,0)}" height="${Math.max(qh,0)}" fill="${RRGD_QCOL[q]}" opacity="0.05"/>`;
+  s += `<text x="${W - MR - 6}" y="${MT + 16}" text-anchor="end" font-size="13" fill="${RRGD_QCOL["領先"]}" opacity="0.85">領先</text>`
+     + `<text x="${W - MR - 6}" y="${H - MB - 8}" text-anchor="end" font-size="13" fill="${RRGD_QCOL["轉弱"]}" opacity="0.85">轉弱</text>`
+     + `<text x="${ML + 6}" y="${H - MB - 8}" font-size="13" fill="${RRGD_QCOL["落後"]}" opacity="0.85">落後</text>`
+     + `<text x="${ML + 6}" y="${MT + 16}" font-size="13" fill="${RRGD_QCOL["改善"]}" opacity="0.85">改善</text>`;
+  // 外框＋100/100 中心線
+  s += `<rect x="${ML}" y="${MT}" width="${W - ML - MR}" height="${H - MT - MB}" fill="none" stroke="var(--line)"/>`
+     + `<line x1="${cx}" y1="${MT}" x2="${cx}" y2="${H - MB}" stroke="var(--muted)" stroke-dasharray="4 4" opacity="0.6"/>`
+     + `<line x1="${ML}" y1="${cy}" x2="${W - MR}" y2="${cy}" stroke="var(--muted)" stroke-dasharray="4 4" opacity="0.6"/>`;
+  // 軸標籤與範圍刻度
+  const f1 = v => v.toFixed(1);
+  s += `<text x="${W - MR}" y="${H - 8}" text-anchor="end" font-size="12" fill="var(--muted)">RS-Ratio（相對強度）→</text>`
+     + `<text x="12" y="${MT + 10}" font-size="12" fill="var(--muted)" transform="rotate(-90 12 ${MT + 10})" text-anchor="end">RS-Momentum（動能）→</text>`
+     + `<text x="${ML}" y="${H - MB + 14}" font-size="10" fill="var(--muted)">${f1(x0)}</text>`
+     + `<text x="${cx}" y="${H - MB + 14}" text-anchor="middle" font-size="10" fill="var(--muted)">100</text>`
+     + `<text x="${W - MR}" y="${H - MB + 14}" text-anchor="end" font-size="10" fill="var(--muted)">${f1(x1)}</text>`
+     + `<text x="${ML - 4}" y="${MT + 8}" text-anchor="end" font-size="10" fill="var(--muted)">${f1(y1)}</text>`
+     + `<text x="${ML - 4}" y="${cy + 3}" text-anchor="end" font-size="10" fill="var(--muted)">100</text>`
+     + `<text x="${ML - 4}" y="${H - MB}" text-anchor="end" font-size="10" fill="var(--muted)">${f1(y0)}</text>`;
+  const title = (nm, c) => `<title>${esc(nm)}｜${rrgdQuad(c[0], c[1])}｜RS-Ratio ${c[0].toFixed(2)}／RS-Momentum ${c[1].toFixed(2)}</title>`;
+  // 非錨點：淡化小點，hover（<title>）可見名稱與座標
+  for (const nm of RRGD.names){
+    const c = coords[nm][t];
+    if (!c || anchors.has(nm)) continue;
+    s += `<circle cx="${sx(c[0]).toFixed(1)}" cy="${sy(c[1]).toFixed(1)}" r="3.5" fill="${RRGD_QCOL[rrgdQuad(c[0], c[1])]}" opacity="0.35">${title(nm, c)}</circle>`;
+  }
+  // 錨點：尾巴折線＋頭點＋標名
+  for (const nm of Object.keys(tails)){
+    const pts = tails[nm], c = coords[nm][t], col = RRGD_QCOL[rrgdQuad(c[0], c[1])];
+    if (pts.length > 1)
+      s += `<polyline points="${pts.map(p => sx(p[0]).toFixed(1) + "," + sy(p[1]).toFixed(1)).join(" ")}" fill="none" stroke="${col}" stroke-width="1.5" opacity="0.45"/>`
+         + `<circle cx="${sx(pts[0][0]).toFixed(1)}" cy="${sy(pts[0][1]).toFixed(1)}" r="2" fill="${col}" opacity="0.45"/>`;
+    s += `<circle cx="${sx(c[0]).toFixed(1)}" cy="${sy(c[1]).toFixed(1)}" r="5" fill="${col}" opacity="0.95">${title(nm, c)}</circle>`
+       + `<text x="${(sx(c[0]) + 7).toFixed(1)}" y="${(sy(c[1]) - 6).toFixed(1)}" font-size="11" fill="var(--txt)">${esc(nm)}</text>`;
+  }
+  return s + `</svg>`;
+}
+function rrgdListTable(names, j, t){
+  if (!names.length)
+    return `<div class="empty">本日無連續 ${RRGD_PERSIST} 日停留在該象限的產業鏈</div>`;
+  const rows = names.map((nm, i) => {
+    const c = RRGD.coords[nm][t], sh = (j.chains[nm].share || [])[t];
+    return `<tr><td>${i + 1}</td><td>${esc(nm)}</td><td>${c[0].toFixed(2)}</td><td>${c[1].toFixed(2)}</td>`
+      + `<td>${sh != null ? (sh * 100).toFixed(2) + "%" : '<span class="mut">—</span>'}</td></tr>`;
+  }).join("");
+  return `<div class="tblbox"><table class="mtable"><thead><tr><th>#</th><th>產業鏈</th>`
+    + `<th>RS-Ratio</th><th>RS-Momentum</th><th>成交佔比</th></tr></thead><tbody>${rows}</tbody></table></div>`;
+}
+function renderRrgd(){
+  const main = document.getElementById("main");
+  if (state.rrgdErr){
+    main.innerHTML = `<div class="empty">輪動雷達資料載入失敗：${esc(state.rrgdErr.message || state.rrgdErr)}<br>`
+      + `資料源為 taiwan-flow-live-v2 的 data/chain_daily/series.json（每交易日夜間更新），可稍後重整再試；其他 tab 不受影響。</div>`;
+    return;
+  }
+  const j = state.rrgd;
+  if (!j){ main.innerHTML = `<div class="empty">載入中…</div>`; return; }
+  const t = rrgdSelT(), dates = j.dates, lastDate = dates[dates.length - 1];
+  // 新鮮度：落後今日超過 3 個平日（粗略近似，國定假日不扣）→ 提示資料未更新
+  const lag = rrgdLagDays(twNow().slice(0, 10), lastDate);
+  const stale = lag > 3
+    ? `<div class="mcard" style="border-color:#e8b339;color:#e8b339">⚠ 資料未更新：`
+      + `series.json 最後日期 ${esc(lastDate)}，已落後今日約 ${lag} 個平日（假日以平日粗略計）。`
+      + `上游增量更新（taiwan-flow-live-v2 baseline 班掛載）可能中斷。</div>` : "";
+  // 日期選擇（僅列可算出座標的日期；預設最新日）
+  const vi = RRGD.valid, pos = vi.indexOf(t);
+  const opts = vi.slice().reverse().map(i =>
+    `<option value="${i}" ${i === t ? "selected" : ""}>${esc(dates[i])}</option>`).join("");
+  const controls = `<div class="subtabs" style="align-items:center">`
+    + `<div class="subtab" data-rrgdstep="-1" ${pos <= 0 ? 'style="opacity:.4"' : ""}>◀ 前一日</div>`
+    + `<select id="rrgdSel" style="background:var(--card);border:1px solid var(--line);color:var(--txt);border-radius:9px;padding:6px 10px;font-size:.84rem">${opts}</select>`
+    + `<div class="subtab" data-rrgdstep="1" ${pos >= vi.length - 1 ? 'style="opacity:.4"' : ""}>後一日 ▶</div>`
+    + `<span style="color:var(--muted);font-size:.78rem">資料至 ${esc(lastDate)} · 共 ${vi.length} 個可顯示交易日</span>`
+    + `</div>`;
+  const intro = `<div class="mcard" style="font-size:.8rem;color:var(--muted);line-height:1.6">`
+    + `畫布為 <b style="color:var(--txt)">${esc(dates[t])}</b> 的 47 條產業鏈位置：`
+    + `軌跡尾巴（近 ${RRGD_TAIL} 個交易日）只畫當日成交額 Top ${RRGD_ANCHORS} 錨點並標名，`
+    + `其餘淡化顯示、滑鼠移上可見名稱與座標。象限自右上順時針＝領先／轉弱／落後／改善（100/100 分界，不做中位置中）。</div>`;
+  const listNote = `連續 ${RRGD_PERSIST} 日停留在該象限才列入（壓住日頻清單洗牌），完整列出不設上限；排序＝RS-Momentum 遞減`;
+  const imp = rrgdPersistList(RRGD.coords, t, "改善", RRGD_PERSIST);
+  const lead = rrgdPersistList(RRGD.coords, t, "領先", RRGD_PERSIST);
+  const foot = `<div class="mcard" style="font-size:.76rem;color:var(--muted);line-height:1.7;margin-top:14px">`
+    + `<b style="color:var(--txt)">閱讀提醒（依據本專案回測）</b><br>`
+    + `· 前瞻超額報酬六種切法 0/12 顯著——資料不支持任何買賣建議，本圖僅描述各鏈相對大盤的歷史位置與變化。`
+    + `軸定義與回測依據見 taiwan-flow-live-v2/backtest/report_rrg_daily_axes.md。<br>`
+    + `· 成員重疊：一塊錢平均被算進 2.24 條鏈；14 條鏈的成交額 100% 來自同時屬於其他鏈的成員，兩點靠近不代表獨立。<br>`
+    + `· <a class="slink" href="https://shihpc.github.io/taiwan-flow-live-v2/" target="_blank" rel="noopener">盤中版 →</a>`
+    + `（盤中逐 10 分鐘版在即時站的「即時一覽」；兩者軸定義不同：盤中為成交佔比相對自身基準，本頁為報酬相對大盤）</div>`;
+  main.innerHTML = stale + controls + intro
+    + `<div class="mcard" style="overflow-x:auto">${rrgdSvg(j, t)}</div>`
+    + sec("資金剛輪入（改善象限）", listNote)
+    + rrgdListTable(imp, j, t)
+    + sec("動能領先（領先象限）", listNote)
+    + rrgdListTable(lead, j, t)
+    + foot;
+}
+document.addEventListener("click", e => {
+  const stp = e.target.closest("[data-rrgdstep]");
+  if (stp && RRGD.valid){
+    const vi = RRGD.valid, pos = vi.indexOf(rrgdSelT());
+    const np = Math.min(vi.length - 1, Math.max(0, pos + (+stp.dataset.rrgdstep)));
+    state.rrgdIdx = vi[np]; render();
+  }
+});
+document.addEventListener("change", e => {
+  if (e.target && e.target.id === "rrgdSel"){ state.rrgdIdx = +e.target.value; render(); }
+});
 
 // ---------- 摘要分析（前端即時呼叫 Claude API） ----------
 // key 只存本機 localStorage，只隨查詢送給 Anthropic，不進 repo、不傳第三方。
@@ -2858,6 +3132,16 @@ function ensureMktbal(){
   loadJSON("data/market_balance_history.json?t="+Date.now())
     .then(j=>{ state.mktbal = j; }).catch(e=>{ state.mktbalErr = e; })
     .finally(()=>{ state.mktbalLoading = false; if (state.tab === "mktbal") render(); });
+}
+// 輪動雷達 series.json（594KB，taiwan-flow-live-v2 跨repo）同樣懶載；
+// 載入成功即算好座標放 RRGD 快取，rrgdPrep 對格式異常 throw → 走 rrgdErr 降級文案
+function ensureChainDaily(){
+  if (state.rrgd || state.rrgdErr || state.rrgdLoading) return;
+  state.rrgdLoading = true;
+  loadJSON(SUM_V2_RAW+"/chain_daily/series.json?t="+Date.now())
+    .then(j=>{ Object.assign(RRGD, rrgdPrep(j)); state.rrgd = j; })
+    .catch(e=>{ state.rrgdErr = e; })
+    .finally(()=>{ state.rrgdLoading = false; if (state.tab === "rrgd") render(); });
 }
 load();
 </script>
