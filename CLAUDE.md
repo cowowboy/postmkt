@@ -39,12 +39,14 @@
 
 ## 佈局
 
-- `index.html`：12 個 tab 全部前端（CSS/JS 內嵌）。`render()` 分派各 tab；共用表格框架 `tbl()`
+- `index.html`：13 個 tab 全部前端（CSS/JS 內嵌）。`render()` 分派各 tab；共用表格框架 `tbl()`
   （排序/分組表頭/凍結欄/虛擬捲動，sticky 的坑記在 `<style>` 註解）。
 - `build_postmkt.py` → `data/postmkt.json`（主資料，五個盤後 tab）
 - `build_summary.py` → `data/summary/`（AI 彙總自動場；含資料齊全輪詢閘門與假日判斷）
 - `src/build_diag.py` → `data/diag/diag.json`（持股診斷素材庫；cache.json 走 actions/cache 不進 git）
 - `src/build_mktbal.py` → `data/market_balance_history.json`（大盤餘額）
+- `src/build_screen.py` → `data/screen/screen.json`（選股：TradingView 初篩＋鉅亨 FactSet 預估
+  EPS/目標價/評等＋diag 合併；掛在 diag workflow 後段，`continue-on-error` 失敗不擋 diag）
 - 共用模組：`src/fmclient.py`（FinMind client＋token/台北時區）、`src/twseclient.py`（TWSE 節流）
 - workflows：build/diag/mktbal/summary（各自 cron＋v2 Worker 哨兵 dispatch）＋ test.yml；
   commit/push 與失敗告警在 `.github/actions/` composite
@@ -73,8 +75,8 @@
 ```bash
 python -m pytest tests/ -q        # 離線單元測試（免 token/網路）
 python src/build_diag.py --sample # diag 管線本地驗證（免 token）
-python -m http.server 8000        # 前端本機驗證；慣例＝12 個 tab 逐一點擊 console 零 error
+python -m http.server 8000        # 前端本機驗證；慣例＝13 個 tab 逐一點擊 console 零 error
 ruff check .                      # lint（設定在 pyproject.toml）
 ```
 
-改前端後務必實測 12 tab 零 console error（歷次都這樣驗）；改 gather/SYS 後記得跨站同步檢查。
+改前端後務必實測 13 tab 零 console error（歷次都這樣驗）；改 gather/SYS 後記得跨站同步檢查。

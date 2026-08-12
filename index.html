@@ -263,7 +263,7 @@ const TABS = [
   ["summary","彙總分析"],
   ["aetf","主動ETF"],["lending","融借券"],["daytrade","當沖"],
   ["block","鉅額"],["oddlot","零股"],["broker","分點"],["mktbal","大盤餘額"],
-  ["rrgd","輪動雷達"],["diag","持股診斷"],["dates","日期"],
+  ["rrgd","輪動雷達"],["screen","選股"],["diag","持股診斷"],["dates","日期"],
 ];
 const SUBS = {
   insight:"AI 摘要分析：彙整本頁各 tab 資料（主動ETF／三大法人買賣超／融借券／當沖／鉅額／零股盤中／指定分點），由 Claude 生成以查找 alpha 標的為目標的洞見。前端即時呼叫，token 由你自備、只存本機瀏覽器。非投資建議、非預測，僅描述歷史統計傾向。",
@@ -277,6 +277,7 @@ const SUBS = {
   mktbal:"大盤層級籌碼餘額：融資餘額（源自FinMind）／借券賣出餘額（源自TWSE公開端點）兩項全市場合計金額，非個股加總排行——個股層級請見「融借券」tab；融券與不限用途款項借貸因官方無金額統計不列。近30交易日逐日＋近3年各月底（年列可展開）。",
   rrgd:"盤後日頻產業輪動雷達（RRG-Daily）：47 條產業鏈的相對輪動圖。X 軸 RS-Ratio＝鏈等權報酬指數相對大盤等權基準的相對強度（12 日窗 z-score 標準化，100 為中性）；Y 軸 RS-Momentum＝RS-Ratio 的 10 日變化率再做同法標準化。資料源 taiwan-flow-live-v2 data/chain_daily（每交易日夜間增量更新）。僅描述各鏈相對大盤的歷史位置與變化；回測顯示象限轉換對未來報酬無顯著預測力，非投資建議。",
   dates:"各資料源目前的資料日與產出時間；判斷哪些已是最新交易日、哪些尚未更新。資料為排程產出，當日盤後資料通常於當晚 21:00 後才更新，故白天多半看到前一交易日。",
+  screen:"選股：以分析師預估（FactSet 經鉅亨網／TradingView）篩選明年預估 EPS 達門檻之個股，並列今明年預估 EPS／本益比、目標價中位數與潛在漲幅、營收動能與評等分布。預估值為券商共識、隨時修訂，屬 AI 彙整之市場預期而非買賣建議與保證。",
   diag:"持股診斷：輸入持股後逐檔彙整籌碼／價量／題材／基本面／系統五面向事實與紅黃綠風險燈號，附近3日新聞命中與可選的 AI 解讀（按了才呼叫、token 自備）。證據彙整工具、非投資建議，不輸出買賣指令；持股資料僅存於本機瀏覽器（localStorage），不上傳任何伺服器。素材庫每交易日約 22:10 更新（全市場通用資料）。",
 };
 const V2_BASE = "https://raw.githubusercontent.com/shihpc/taiwan-flow-live-v2/main/data/aetf";
@@ -296,6 +297,7 @@ const state = { tab:"insight", openEtf:null, openSub:null, openLend:null, lendQu
   diagNews:undefined, diagAI:null,
   aetfCmpOpen:false, aetfCmpMore:{},
   mktbal:null, mktbalErr:null, mktbalLoading:false, mktbalSel:"margin", mktbalOpen:{},
+  screen:null, screenErr:null, screenLoading:false, screenMin:50,
   rrgd:null, rrgdErr:null, rrgdLoading:false, rrgdIdx:null };
 
 const esc = s => String(s==null?"":s).replace(/[&<>"']/g,
@@ -1147,6 +1149,8 @@ document.addEventListener("click", e => {
     const i = document.getElementById("bkQ_branch"); if (i){ i.value = jp.dataset.bkjump; bkQuery("branch"); } return; }
   const ms = e.target.closest("[data-mktsel]");
   if (ms){ state.mktbalSel = ms.dataset.mktsel; render(); return; }
+  const sm = e.target.closest("[data-scrmin]");
+  if (sm){ state.screenMin = +sm.dataset.scrmin; render(); return; }
   const my = e.target.closest("[data-mktyr]");
   if (my){ const y = my.dataset.mktyr; state.mktbalOpen[y] = !state.mktbalOpen[y]; render(); return; }
 });
@@ -1183,6 +1187,11 @@ function renderStats(){
     const j = state.rrgd;
     el.innerHTML = j ? `<div class="stat">資料至 <b>${esc(j.dates[j.dates.length-1]||"—")}</b></div>`
       + `<div class="stat"><b>${Object.keys(j.chains||{}).length}</b> 條產業鏈</div>` : "";
+  } else if (state.tab === "screen"){
+    // 同 mktbal/diag：有自己資料日的 tab 不借用 postmkt 的資料日
+    const sc = state.screen;
+    el.innerHTML = sc ? `<div class="stat">資料日 <b>${esc(sc.date||"—")}</b></div>`
+      + `<div class="stat"><b>${sc.n||0}</b> 檔</div>` : "";
   } else if (state.tab === "diag"){
     const dg = state.diag;
     el.innerHTML = dg ? `<div class="stat">素材庫資料日 <b>${esc(dg.date||"—")}</b></div>`
@@ -1210,6 +1219,7 @@ function render(){
   else if (state.tab === "aetf") renderAETF();
   else if (state.tab === "mktbal"){ ensureMktbal(); renderMktbal(); }
   else if (state.tab === "rrgd"){ ensureChainDaily(); renderRrgd(); }
+  else if (state.tab === "screen"){ ensureScreen(); renderScreen(); }
   else { if (state.tab === "diag") ensureDiag(); renderPM(); }
 }
 function renderTabs(){
@@ -2586,6 +2596,97 @@ document.addEventListener("click", e => {
     state.sumManualOpen = state.sumManualOpen===i ? null : i; render(); return; }
 });
 
+// ---------- 選股 tab：data/screen/screen.json（分析師預估篩選，懶載） ----------
+// est 的年度鍵是字串年份、各列起始年不一（真實資料含 2022-2025 等歷史年鍵）；
+// 「今年/明年」錨定日曆年：基準年 Y＝screen.json date 的年份（缺則退 generated_at），
+// 今年欄＝est[Y]、明年欄＝est[Y+1]，該列缺該年度一律顯「—」（PER 同）。
+// 刻意不逐列滑動取最小/次小年度——那會讓同一欄混到不同年度的值，比較 PER 誤導。
+const scrNum = v => (typeof v === "number" && isFinite(v)) ? v : null;
+function scrYear(d){
+  const m = String((d && (d.date || d.generated_at)) || "").match(/^(\d{4})/);
+  return m ? +m[1] : null;
+}
+const scrEstY = (r, y) => (y != null && r && r.est && typeof r.est === "object") ? (r.est[String(y)] || null) : null;
+const scrEstMean = (r, y) => { const e = scrEstY(r, y); return e ? scrNum(e.mean) : null; };
+// 門檻過濾與預設排序用「明年EPS」：est[Y+1].mean 優先，缺值 fallback tv.feps，
+// 再缺就不列入該門檻的顯示（「明年 EPS」欄本身仍只顯示錨定年度的 mean，不用 fallback）
+const scrFilterEps = (r, y1) => {
+  const m = scrEstMean(r, y1);
+  if (m != null) return m;
+  return (r && r.tv) ? scrNum(r.tv.feps) : null;
+};
+// 預估本益比：px÷EPS，EPS≤0 或缺任一值不算（負本益比無意義，顯「—」）
+const scrPer = (px, eps) => (scrNum(px) != null && scrNum(eps) != null && eps > 0) ? px / eps : null;
+const scrF1 = v => scrNum(v) == null ? '<span class="mut">—</span>' : v.toFixed(1);
+const scrF2 = v => scrNum(v) == null ? '<span class="mut">—</span>' : v.toFixed(2);
+// rating 鍵名可能與 schema 例略異 → 動態列舉分三桶：sell/under→賣、hold/neutral→持、
+// buy/over/outperform→買（underweight 不含 "over"，先驗 sell/under 不會誤入買桶）
+function scrRating(r){
+  const o = r && r.rating;
+  if (!o || typeof o !== "object") return null;
+  let b = 0, h = 0, s = 0, any = false;
+  for (const k of Object.keys(o)){
+    const v = scrNum(o[k]);
+    if (v == null) continue;
+    const kl = k.toLowerCase();
+    if (/sell|under/.test(kl)) s += v;
+    else if (/hold|neutral/.test(kl)) h += v;
+    else if (/buy|over|outperform/.test(kl)) b += v;
+    else continue;
+    any = true;
+  }
+  return any ? { b, h, s } : null;
+}
+const SCREEN_MINS = [30, 50, 100];
+function renderScreen(){
+  const main = document.getElementById("main");
+  if (state.screenErr){
+    main.innerHTML = `<div class="empty">選股資料尚未產出（data/screen/screen.json 未產生或載入失敗）。</div>`;
+    return;
+  }
+  const d = state.screen;
+  if (!d){ main.innerHTML = `<div class="empty">載入中…</div>`; return; }
+  const all = Array.isArray(d.rows) ? d.rows : [];
+  const y0 = scrYear(d), y1 = y0 != null ? y0 + 1 : null;
+  const rows = all.filter(r => { const f = scrFilterEps(r, y1); return f != null && f >= state.screenMin; });
+  // 預設排序：明年 EPS（錨定年，含 tv.feps fallback，與門檻同一口徑）遞減
+  rows.sort((a, b) => (scrFilterEps(b, y1) ?? -Infinity) - (scrFilterEps(a, y1) ?? -Infinity));
+  const disc = `<div class="diag-disc">分析師預估資料源：FactSet（經鉅亨網）／TradingView。`
+    + `預估值為券商共識、隨時修訂，屬 AI 彙整之市場預期而非買賣建議與保證。`
+    + `資料日期：${esc(d.date || "—")}</div>`;
+  const pills = `<div class="subtabs">` + SCREEN_MINS.map(m =>
+    `<div class="subtab ${state.screenMin === m ? "active" : ""}" data-scrmin="${m}">明年EPS ≥ ${m}</div>`).join("")
+    + `<div class="stat" style="margin-left:auto">顯示 <b>${rows.length}</b> / 共 ${all.length} 檔</div></div>`;
+  const fy = y => y != null ? "FY" + esc(String(y).slice(2)) : "";
+  const yahoo = c => `<a class="slink" href="https://tw.stock.yahoo.com/quote/${esc(c)}/technical-analysis" target="_blank" rel="noopener"><span class="code">${esc(c)}</span></a>`;
+  const upside = r => {
+    const px = scrNum(r.px), md = r.tp ? scrNum(r.tp.median) : null;
+    return (px != null && px > 0 && md != null) ? (md / px - 1) * 100 : null;
+  };
+  const cols = [
+    {h:"代號", cls:"l", f:r => yahoo(r.code || ""), sortVal:r => String(r.code || "")},
+    {h:"名稱", cls:"l", f:r => esc(r.name || "—")},
+    {h:"現價", f:r => scrF2(scrNum(r.px))},
+    {h:(fy(y0) || "今年") + " EPS", f:r => scrF2(scrEstMean(r, y0))},
+    {h:(fy(y1) || "明年") + " EPS", f:r => scrF2(scrEstMean(r, y1))},
+    {h:(fy(y0) || "今年") + " PER", f:r => scrF1(scrPer(r.px, scrEstMean(r, y0)))},
+    {h:(fy(y1) || "明年") + " PER", f:r => scrF1(scrPer(r.px, scrEstMean(r, y1)))},
+    {h:"分析師數", f:r => { const e = scrEstY(r, y1); const n = e ? scrNum(e.n) : null; return n == null ? '<span class="mut">—</span>' : String(n); }},
+    {h:"目標價中位", f:r => scrF2(r.tp ? scrNum(r.tp.median) : null)},
+    {h:"潛在漲幅%", f:r => { const u = upside(r); return u == null ? '<span class="mut">—</span>' : sgn(u, (u > 0 ? "+" : "") + u.toFixed(1) + "%"); }},
+    {h:"營收YoY%", f:r => scrF1(r.diag ? scrNum(r.diag.yoy) : null)},
+    {h:"連N月", f:r => { const v = r.diag ? scrNum(r.diag.rvs) : null; return v == null ? '<span class="mut">—</span>' : String(v); }},
+    {h:"PER-TTM", f:r => scrF1(r.diag ? scrNum(r.diag.pe) : null)},
+    {h:"評等", f:r => { const rt = scrRating(r); return rt ? esc(`買${rt.b}/持${rt.h}/賣${rt.s}`) : '<span class="mut">—</span>'; },
+      sortVal:r => { const rt = scrRating(r); return rt ? rt.b : null; }},
+  ];
+  main.innerHTML = disc + pills
+    + tbl(cols, rows)
+    + `<div class="mut" style="font-size:.74rem;margin:2px 4px 8px">今明年＝以資料日期年份錨定的日曆年（該列無該年度預估顯「—」）；EPS＝各券商預估平均（mean）；`
+    + `PER＝現價÷預估 EPS（EPS≤0 不計）；潛在漲幅＝目標價中位÷現價−1；`
+    + `營收YoY／連N月／PER-TTM 取自持股診斷素材庫口徑。點欄位表頭可排序。</div>`;
+}
+
 // ---------- 持股診斷 tab（子期1）：素材庫 data/diag/diag.json ＋ 燈號規則引擎 ----------
 // 隱私鐵則：持股清單（代號/股數/成本）只存 localStorage("pm_holdings")，
 // 絕不放進任何網路請求 payload、絕不走 gh_token 雲端儲存（repo 是 public）。
@@ -3125,6 +3226,13 @@ function ensureDiag(){
   loadJSON("data/diag/diag.json?t="+Date.now())
     .then(j=>{ state.diag = j; }).catch(e=>{ state.diagErr = e; })
     .finally(()=>{ state.diagLoading = false; if (state.tab === "diag") render(); });
+}
+function ensureScreen(){
+  if (state.screen || state.screenErr || state.screenLoading) return;
+  state.screenLoading = true;
+  loadJSON("data/screen/screen.json?t="+Date.now())
+    .then(j=>{ state.screen = j; }).catch(e=>{ state.screenErr = e; })
+    .finally(()=>{ state.screenLoading = false; if (state.tab === "screen") render(); });
 }
 function ensureMktbal(){
   if (state.mktbal || state.mktbalErr || state.mktbalLoading) return;

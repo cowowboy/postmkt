@@ -3,6 +3,25 @@
 帶日期的變更紀錄從 README「快速接手」搬出集中於此（2026-07-24 起）；
 更早的逐日歷史見 git log。常青的架構／口徑／教訓說明仍在 README。
 
+## 2026-08-12 新增第 13 個 tab「選股」（分析師預估 EPS 篩選）
+
+動機＝富邦投顧「明年 EPS>50 找萬元股」報告的自動化重現。新管線 `src/build_screen.py` →
+`data/screen/screen.json`：TradingView scanner 批次初篩（`earnings_per_share_forecast_next_fy>=20`，
+server 端 filter，實篩 91 檔）→ 鉅亨網 `marketinfo.api.cnyes.com` 逐檔補 FactSet 共識
+（多年度預估 EPS 高/低/均/中位＋分析師家數、目標價、券商評等；上市上櫃一律 `TWS:` 前綴，
+節流 1.2s/檔，連續 10 檔全失敗才 abort 且 abort 不覆蓋舊檔）→ 合併 diag.json 的
+pe/yoy/mom/rvs 欄。掛在 diag workflow 的 build_diag 之後（`continue-on-error: true`，
+失敗不擋 diag 主產物；commit composite 加 `add_all` 容錯不存在路徑）。
+
+前端 tab：`tbl()` 全欄排序、門檻鈕（明年 EPS ≥30/50/100，預設 50）、forward PER＝現價÷預估
+EPS 自算、目標價中位與潛在漲幅。**年度欄錨定日曆年**（基準年＝資料日年份，今年/明年欄
+分別取 est[Y]/est[Y+1]，缺該年度顯「—」）——初版曾用「逐列取最小年度＋欄頭取眾數」，
+同一欄會混到不同年度（欄頭 FY25、2330 那格卻是 2026 值），驗收抓到後改錨定制。
+門檻過濾口徑＝est[Y+1].mean 缺值 fallback TradingView feps。固定標注「FactSet（經鉅亨網）／
+TradingView，預估值為券商共識非保證」。資料源皆非官方端點、無 SLA（Yahoo 2023 加 crumb
+為前例），管線失敗時前端顯示舊檔或空狀態降級。離線測試 `tests/test_screen.py` 14 支
+（fixture 免網路）；13 tab Playwright 零 console error、門檻筆數/PER/漲幅與 JSON 獨立重算零差異。
+
 ## 2026-08-11 新增第 12 個 tab「輪動雷達」（盤後日頻 RRG）
 
 規格＝taiwan-flow-live-v2 `docs/rrg-daily-spec-20260811.md` §4 第三階段。軸與參數為該專案

@@ -56,11 +56,19 @@ jobs:
           path: data/diag/cache.json
           key: diag-cache-${{ github.run_id }}
 
+      # 選股管線（免 token；TradingView 初篩＋cnyes 詳情，約 3-8 分）。
+      # 失敗不擋 diag 主產物；build_screen.py abort 時不寫檔，commit 步驟自然不帶舊變更
+      - name: Build screen.json
+        continue-on-error: true
+        run: python src/build_screen.py
+
       - name: Commit and push
         uses: ./.github/actions/commit-data
         with:
-          paths: data/diag
+          paths: data/diag data/screen
           message: "data: diag"
+          # data/screen 在 screen abort（不寫檔）時可能不存在，add_all 逐路徑容錯不致 pathspec 報錯
+          add_all: "true"
 
       - name: Notify failure
         # cancelled 也要告警：跑一半被取消（GitHub 端異常或誤按）同樣代表該場沒產出，
