@@ -84,6 +84,10 @@
   .mtable th{color:var(--muted);font-weight:600;font-size:.74rem;cursor:pointer;user-select:none;
     position:sticky;top:-6px;z-index:2;will-change:transform}
   .mtable th:hover{color:var(--txt)}
+  /* 輪動雷達候補清單：整列可點加入/移出畫布（cursor+hover 提示；.on＝已加入） */
+  tr.rrgd-pick{cursor:pointer}
+  tr.rrgd-pick:hover td{background:rgba(51,80,126,.28)}
+  tr.rrgd-pick.on td{background:rgba(51,80,126,.18)}
   /* 固定第一欄（股票名稱）：只套用在一般排行榜表格，鉅額交易的rowspan合併表格
      第一格不是每列都存在，套用會讓固定欄位跟其他欄位錯位，故排除（該表格另有
      bstick1/2 專屬class，見blockTradeTable()）。分組表頭(mtable-2row)每欄兩列
@@ -298,7 +302,7 @@ const state = { tab:"insight", openEtf:null, openSub:null, openLend:null, lendQu
   aetfCmpOpen:false, aetfCmpMore:{},
   mktbal:null, mktbalErr:null, mktbalLoading:false, mktbalSel:"margin", mktbalOpen:{},
   screen:null, screenErr:null, screenLoading:false, screenMin:50,
-  rrgd:null, rrgdErr:null, rrgdLoading:false, rrgdIdx:null };
+  rrgd:null, rrgdErr:null, rrgdLoading:false, rrgdIdx:null, rrgdPicks:null, rrgdMsg:"" };
 
 const esc = s => String(s==null?"":s).replace(/[&<>"']/g,
   c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
@@ -1458,6 +1462,8 @@ function renderMktbal(){
 // 資料不支持任何買賣建議，本 tab 全程描述語氣。
 // RRGD-PURE-BEGIN（此區塊只含純函式，Node 對拍腳本整段抽出執行；勿加 DOM 依賴）
 const RRGD_N = 12, RRGD_K = 10, RRGD_PERSIST = 3, RRGD_TAIL = 10, RRGD_ANCHORS = 10;
+// 候補清單點擊加入畫布：上限 5 條（47 條全畫曾實測 1,477 個軌跡交點、不可讀），存 localStorage
+const RRGD_PICKS_KEY = "pm_rrgd_picks", RRGD_PICKS_MAX = 5;
 // 日報酬逐日連乘成指數。第一格＝base；開頭連續缺值當 0（指數停在 base），
 // 中間缺值才截斷成 None——與 Python 版 cum_index 的規則逐字對齊（分母常數會被 z-score 吸收）。
 function rrgdCumIndex(rets, base){
@@ -1566,6 +1572,17 @@ function rrgdPrep(j){
 }
 // RRGD-PURE-END
 const RRGD = { coords: null, valid: null, names: null };   // rrgdPrep 產物快取（隨 state.rrgd 一起生滅）
+// 讀加選清單：localStorage 有存就用（剔除已不存在於資料的鏈名），仿 aetfCmpSel 慣例。
+// 只能在 RRGD.names 就緒後呼叫（renderRrgd 已保證）。
+function rrgdPicksLoad(){
+  if (state.rrgdPicks) return state.rrgdPicks;
+  let v = null;
+  try{ v = JSON.parse(localStorage.getItem(RRGD_PICKS_KEY)); }catch(e){}
+  state.rrgdPicks = Array.isArray(v)
+    ? v.filter(nm => typeof nm === "string" && RRGD.names.includes(nm)).slice(0, RRGD_PICKS_MAX) : [];
+  return state.rrgdPicks;
+}
+const rrgdPicksSave = v => localStorage.setItem(RRGD_PICKS_KEY, JSON.stringify(v));
 const RRGD_QCOL = { "領先": "#ef5b5b", "轉弱": "#4f9cff", "落後": "#2fbf71", "改善": "#e8b339" };
 const rrgdSelT = () => {
   const v = RRGD.valid;
@@ -1579,22 +1596,30 @@ function rrgdAnchors(j, t){
 }
 function rrgdSvg(j, t){
   const coords = RRGD.coords, anchors = rrgdAnchors(j, t);
+  // 使用者加選（候補清單點擊加入）：已是錨點或當日無座標者不重畫
+  const picks = rrgdPicksLoad().filter(nm => !anchors.has(nm) && coords[nm][t]);
+  const pickSet = new Set(picks);
   // 尾巴：選定日往回取最多 RRGD_TAIL+1 個有座標的點（時間升序）
-  const tails = {};
-  for (const nm of RRGD.names){
-    if (!anchors.has(nm) || !coords[nm][t]) continue;
+  const tailOf = nm => {
     const pts = [];
     for (let i = t; i >= 0 && pts.length < RRGD_TAIL + 1; i--)
       if (coords[nm][i]) pts.unshift([coords[nm][i][0], coords[nm][i][1]]);
-    tails[nm] = pts;
+    return pts;
+  };
+  const tails = {}, pickTails = {};
+  for (const nm of RRGD.names){
+    if (!anchors.has(nm) || !coords[nm][t]) continue;
+    tails[nm] = tailOf(nm);
   }
-  // 座標範圍：當日全部點＋錨點尾巴；保證 100/100 在圖內
+  for (const nm of picks) pickTails[nm] = tailOf(nm);
+  // 座標範圍：當日全部點＋錨點與加選尾巴；保證 100/100 在圖內
   let xs = [99, 101], ys = [99, 101];
   for (const nm of RRGD.names){
     const c = coords[nm][t];
     if (c){ xs.push(c[0]); ys.push(c[1]); }
   }
-  for (const nm of Object.keys(tails)) for (const p of tails[nm]){ xs.push(p[0]); ys.push(p[1]); }
+  for (const tl of [tails, pickTails])
+    for (const nm of Object.keys(tl)) for (const p of tl[nm]){ xs.push(p[0]); ys.push(p[1]); }
   const pad = 0.4;
   const x0 = Math.min.apply(null, xs) - pad, x1 = Math.max.apply(null, xs) + pad;
   const y0 = Math.min.apply(null, ys) - pad, y1 = Math.max.apply(null, ys) + pad;
@@ -1628,11 +1653,20 @@ function rrgdSvg(j, t){
      + `<text x="${ML - 4}" y="${cy + 3}" text-anchor="end" font-size="10" fill="var(--muted)">100</text>`
      + `<text x="${ML - 4}" y="${H - MB}" text-anchor="end" font-size="10" fill="var(--muted)">${f1(y0)}</text>`;
   const title = (nm, c) => `<title>${esc(nm)}｜${rrgdQuad(c[0], c[1])}｜RS-Ratio ${c[0].toFixed(2)}／RS-Momentum ${c[1].toFixed(2)}</title>`;
-  // 非錨點：淡化小點，hover（<title>）可見名稱與座標
+  // 非錨點且非加選：淡化小點，hover（<title>）可見名稱與座標
   for (const nm of RRGD.names){
     const c = coords[nm][t];
-    if (!c || anchors.has(nm)) continue;
+    if (!c || anchors.has(nm) || pickSet.has(nm)) continue;
     s += `<circle cx="${sx(c[0]).toFixed(1)}" cy="${sy(c[1]).toFixed(1)}" r="3.5" fill="${RRGD_QCOL[rrgdQuad(c[0], c[1])]}" opacity="0.35">${title(nm, c)}</circle>`;
+  }
+  // 加選鏈：虛線尾巴＋外圈虛線頭點＋標名（與錨點的實線視覺區分）
+  for (const nm of picks){
+    const pts = pickTails[nm], c = coords[nm][t], col = RRGD_QCOL[rrgdQuad(c[0], c[1])];
+    if (pts.length > 1)
+      s += `<polyline points="${pts.map(p => sx(p[0]).toFixed(1) + "," + sy(p[1]).toFixed(1)).join(" ")}" fill="none" stroke="${col}" stroke-width="1.5" stroke-dasharray="5 3" opacity="0.7"/>`
+         + `<circle cx="${sx(pts[0][0]).toFixed(1)}" cy="${sy(pts[0][1]).toFixed(1)}" r="2" fill="${col}" opacity="0.55"/>`;
+    s += `<circle cx="${sx(c[0]).toFixed(1)}" cy="${sy(c[1]).toFixed(1)}" r="5" fill="${col}" opacity="0.9" stroke="var(--txt)" stroke-width="1.1" stroke-dasharray="2.5 1.8">${title(nm, c)}</circle>`
+       + `<text x="${(sx(c[0]) + 7).toFixed(1)}" y="${(sy(c[1]) - 6).toFixed(1)}" font-size="11" fill="var(--txt)" opacity="0.85">${esc(nm)}</text>`;
   }
   // 錨點：尾巴折線＋頭點＋標名
   for (const nm of Object.keys(tails)){
@@ -1648,13 +1682,20 @@ function rrgdSvg(j, t){
 function rrgdListTable(names, j, t){
   if (!names.length)
     return `<div class="empty">本日無連續 ${RRGD_PERSIST} 日停留在該象限的產業鏈</div>`;
+  const picks = rrgdPicksLoad(), anchors = rrgdAnchors(j, t);
   const rows = names.map((nm, i) => {
     const c = RRGD.coords[nm][t], sh = (j.chains[nm].share || [])[t];
-    return `<tr><td>${i + 1}</td><td>${esc(nm)}</td><td>${c[0].toFixed(2)}</td><td>${c[1].toFixed(2)}</td>`
-      + `<td>${sh != null ? (sh * 100).toFixed(2) + "%" : '<span class="mut">—</span>'}</td></tr>`;
+    const isAnchor = anchors.has(nm), on = picks.includes(nm);
+    // 錨點鏈畫布本來就有軌跡，不可點；其餘整列可點 toggle（data-rrgd-pick，觸控同 click）
+    const mark = isAnchor ? '<span class="mut" title="成交額 Top 10 錨點，畫布固定顯示">錨點</span>'
+      : on ? '<span style="color:var(--accent)">✓ 已加入</span>' : '<span class="mut">＋ 加入</span>';
+    return `<tr${isAnchor ? "" : ` class="rrgd-pick${on ? " on" : ""}" data-rrgd-pick="${encodeURIComponent(nm)}"`}>`
+      + `<td>${i + 1}</td><td>${esc(nm)}</td><td>${c[0].toFixed(2)}</td><td>${c[1].toFixed(2)}</td>`
+      + `<td>${sh != null ? (sh * 100).toFixed(2) + "%" : '<span class="mut">—</span>'}</td>`
+      + `<td>${mark}</td></tr>`;
   }).join("");
   return `<div class="tblbox"><table class="mtable"><thead><tr><th>#</th><th>產業鏈</th>`
-    + `<th>RS-Ratio</th><th>RS-Momentum</th><th>成交佔比</th></tr></thead><tbody>${rows}</tbody></table></div>`;
+    + `<th>RS-Ratio</th><th>RS-Momentum</th><th>成交佔比</th><th>畫布</th></tr></thead><tbody>${rows}</tbody></table></div>`;
 }
 function renderRrgd(){
   const main = document.getElementById("main");
@@ -1685,7 +1726,8 @@ function renderRrgd(){
   const intro = `<div class="mcard" style="font-size:.8rem;color:var(--muted);line-height:1.6">`
     + `畫布為 <b style="color:var(--txt)">${esc(dates[t])}</b> 的 47 條產業鏈位置：`
     + `軌跡尾巴（近 ${RRGD_TAIL} 個交易日）只畫當日成交額 Top ${RRGD_ANCHORS} 錨點並標名，`
-    + `其餘淡化顯示、滑鼠移上可見名稱與座標。象限自右上順時針＝領先／轉弱／落後／改善（100/100 分界，不做中位置中）。</div>`;
+    + `其餘淡化顯示、滑鼠移上可見名稱與座標。象限自右上順時針＝領先／轉弱／落後／改善（100/100 分界，不做中位置中）。`
+    + `下方候補清單<b style="color:var(--txt)">點列可把該鏈軌跡加入畫布</b>（虛線顯示、再點一次移除，最多 ${RRGD_PICKS_MAX} 條）。</div>`;
   const listNote = `連續 ${RRGD_PERSIST} 日停留在該象限才列入（壓住日頻清單洗牌），完整列出不設上限；排序＝RS-Momentum 遞減`;
   const imp = rrgdPersistList(RRGD.coords, t, "改善", RRGD_PERSIST);
   const lead = rrgdPersistList(RRGD.coords, t, "領先", RRGD_PERSIST);
@@ -1696,8 +1738,19 @@ function renderRrgd(){
     + `· 成員重疊：一塊錢平均被算進 2.24 條鏈；14 條鏈的成交額 100% 來自同時屬於其他鏈的成員，兩點靠近不代表獨立。<br>`
     + `· <a class="slink" href="https://shihpc.github.io/taiwan-flow-live-v2/" target="_blank" rel="noopener">盤中版 →</a>`
     + `（盤中逐 10 分鐘版在即時站的「即時一覽」；兩者軸定義不同：盤中為成交佔比相對自身基準，本頁為報酬相對大盤）</div>`;
+  // 加選狀態列：目前加選（各名可點移除，涵蓋「已加選但不在下方清單」的鏈）＋超限提示＋全部移除
+  const picks = rrgdPicksLoad();
+  const pickBar = `<div class="mcard" style="font-size:.78rem;color:var(--muted);line-height:1.7">`
+    + `畫布加選 ${picks.length}／${RRGD_PICKS_MAX} 條`
+    + (picks.length
+        ? `：${picks.map(nm => `<span data-rrgd-pick="${encodeURIComponent(nm)}" style="cursor:pointer;color:var(--txt)" title="點擊自畫布移除">${esc(nm)} ✕</span>`).join("、")}`
+          + ` <span data-rrgd-clear="1" style="cursor:pointer;color:var(--accent);margin-left:6px">全部移除</span>`
+        : `（尚未加選，點下方候補清單任一列即可加入）`)
+    + (state.rrgdMsg ? ` <span style="color:#e8b339">⚠ ${esc(state.rrgdMsg)}</span>` : "")
+    + `</div>`;
   main.innerHTML = stale + controls + intro
     + `<div class="mcard" style="overflow-x:auto">${rrgdSvg(j, t)}</div>`
+    + pickBar
     + sec("資金剛輪入（改善象限）", listNote)
     + rrgdListTable(imp, j, t)
     + sec("動能領先（領先象限）", listNote)
@@ -1710,6 +1763,22 @@ document.addEventListener("click", e => {
     const vi = RRGD.valid, pos = vi.indexOf(rrgdSelT());
     const np = Math.min(vi.length - 1, Math.max(0, pos + (+stp.dataset.rrgdstep)));
     state.rrgdIdx = vi[np]; render();
+    return;
+  }
+  // 候補清單／狀態列：加選 toggle 與全部移除（document 級 delegation，重繪不掉綁定）
+  if (e.target.closest("[data-rrgd-clear]") && RRGD.names){
+    state.rrgdPicks = []; rrgdPicksSave([]); state.rrgdMsg = ""; render(); return;
+  }
+  const pk = e.target.closest("[data-rrgd-pick]");
+  if (pk && RRGD.names){
+    const nm = decodeURIComponent(pk.dataset.rrgdPick), cur = rrgdPicksLoad();
+    if (cur.includes(nm)){ state.rrgdPicks = cur.filter(x => x !== nm); state.rrgdMsg = ""; }
+    else if (cur.length >= RRGD_PICKS_MAX){
+      state.rrgdMsg = `已達加選上限 ${RRGD_PICKS_MAX} 條（避免軌跡過多不可讀），請先移除既有加選`;
+      render(); return;
+    }
+    else { state.rrgdPicks = cur.concat([nm]); state.rrgdMsg = ""; }
+    rrgdPicksSave(state.rrgdPicks); render();
   }
 });
 document.addEventListener("change", e => {
