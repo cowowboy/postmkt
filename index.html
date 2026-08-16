@@ -2823,7 +2823,8 @@ async function runDiagAI(c){
 // 燈號規則表（資料驅動、單一定義處；未來回測校準只改這張表）。
 // col:red/green；ver:true=已驗證（附回測出處 ref），false=描述性未驗證。
 // test 回傳 true/false/null（null=資料不足，不觸發也不列入判定）。
-// 先驗權重：任一紅 -> 總燈紅；無紅且個股層（籌碼/價量/題材）有綠 -> 總燈綠；其餘黃。
+// 判定為布林規則的優先序（無分數、無權重、無門檻）：任一紅 -> 總燈紅；
+// 無紅且個股層（籌碼/價量/題材）有綠 -> 總燈綠；其餘黃。
 const DIAG_PCT = v => v==null ? "—" : (v>0?"+":"")+v.toFixed(2)+"%";
 const DIAG_RULES = [
   { id:"P1", dim:"價量", col:"red", ver:true, name:"破20日新低",
@@ -3118,12 +3119,12 @@ function diagCardHtml(hd){
 function diagRulesHtml(){
   let h = `<div class="mcard" style="padding:10px 14px">`;
   h += `<div class="clk" data-diag-rules="1" style="font-size:.86rem"><b>規則說明</b>`
-    + `<span class="mut" style="font-size:.76rem;margin-left:8px">燈號條件表（先驗權重，未來回測校準）${state.diagRulesOpen?"▲":"▼"}</span></div>`;
+    + `<span class="mut" style="font-size:.76rem;margin-left:8px">燈號條件表（布林規則優先序判定）${state.diagRulesOpen?"▲":"▼"}</span></div>`;
   if (state.diagRulesOpen){
     h += `<div class="mut" style="font-size:.78rem;margin:8px 0 6px;line-height:1.6">`
       + `判定：任一紅燈規則成立 → 總燈紅；無紅且個股層（籌碼/價量/題材）有綠 → 總燈綠；其餘黃（系統面綠燈只影響子燈）。`
       + `標註「疊加條件」的規則（如土洋同買）回測顯示獨立無效，僅在另有其他綠燈規則成立時作加分項計入，不單獨亮綠。`
-      + `「已驗證」＝曾以歷史資料回測並記錄於工作區文件的訊號，僅代表歷史統計傾向；其餘為描述性統計、未經回測。規則權重為先驗設定，將隨回測校準調整。</div>`;
+      + `「已驗證」＝曾以歷史資料回測並記錄於工作區文件的訊號，僅代表歷史統計傾向；其餘為描述性統計、未經回測。燈號判定為上述布林規則的優先序，無分數、權重或門檻；規則集未經整體回測驗證。</div>`;
     h += `<table style="border-collapse:collapse;width:100%;font-size:.8rem">`
       + `<tr>${["面向","燈","規則","條件","性質"].map(x=>`<th style="text-align:left;padding:3px 8px;color:var(--muted);font-weight:400">${x}</th>`).join("")}</tr>`
       + DIAG_RULES.map(r => `<tr>`
