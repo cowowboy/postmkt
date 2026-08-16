@@ -37,6 +37,10 @@ from fmclient import TAIPEI, api_get, token as fm_token  # noqa: E402
 
 OUT_DIR = ROOT / "data" / "summary"
 
+# 帶普通瀏覽器 UA（同 src/build_screen.py）：預設 python-requests UA 曾在同族管線被
+# Cloudflare 依 UA 全擋（taiwan-flow-live-v2 cards 管線 1010 事故），此為同族預防。
+HEADERS = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"}
+
 # ---------- 資料源 ----------
 URL_POSTMKT = "https://raw.githubusercontent.com/shihpc/postmkt/main/data/postmkt.json"
 URL_AETF_LATEST = "https://raw.githubusercontent.com/shihpc/taiwan-flow-live-v2/main/data/aetf/latest.json"
@@ -204,7 +208,7 @@ def http_json(url: str, timeout: int = 60, bust: bool = True):
     """GET JSON；bust=True 加 cache-buster（raw.githubusercontent 有 ~5 分快取，輪詢要繞過）。"""
     if bust:
         url = url + ("&" if "?" in url else "?") + f"t={int(time.time())}"
-    r = requests.get(url, timeout=timeout)
+    r = requests.get(url, timeout=timeout, headers=HEADERS)
     r.raise_for_status()
     return r.json()
 
