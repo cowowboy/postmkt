@@ -2550,7 +2550,7 @@ function summaryHtml(){
       + `<span class="qbtn" data-gh-save>儲存</span></div></div>`;
   }
   h += `<div class="mcard" style="padding:12px 14px"><div class="qrow">`
-    + `<span class="qbtn" data-summary-run>⚡ 產生彙總分析（6+1 次呼叫）</span>`
+    + `<span class="qbtn" data-summary-run>⚡ 產生彙總分析（3+1 次呼叫）</span>`
     + (anthKey()?`<span class="mut" style="font-size:.74rem;cursor:pointer" data-anth-clear>Anthropic token已設定（點此清除）</span>`:"")
     + (ghToken()?`<span class="mut" style="font-size:.74rem;cursor:pointer" data-gh-clear>GitHub token已設定（點此清除）</span>`:"")
     + `</div><div class="insight-note">流程：並行抓齊三頁資料（盤後分析＝本頁各 tab＋指定分點／即時類股動態＝v2 Worker 即時快照／新聞晨報＝新聞+晨報+美股）`
