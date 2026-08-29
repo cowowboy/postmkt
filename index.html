@@ -196,7 +196,7 @@
   .dbtn{background:var(--chip);border:1px solid var(--line);color:var(--txt);border-radius:8px;
     padding:5px 12px;font-size:.84rem;cursor:pointer}
   .dbtn:hover{border-color:var(--accent)}
-  /* 主動ETF比較（acmp- 前綴避免撞名）：選檔面板仿新聞晨報「來源」勾選、四欄橫向捲動 */
+  /* 主動ETF比較（acmp- 前綴避免撞名）：選檔面板仿新聞晨報「來源」勾選、多欄橫向捲動（上限 AETF_CMP_MAX） */
   .acmp-btn{background:var(--card);border:1px solid var(--line);border-radius:9px;padding:5px 11px;
     font-size:.8rem;color:var(--muted);cursor:pointer;user-select:none;display:inline-block}
   .acmp-btn:hover{border-color:#33507e}
@@ -638,8 +638,8 @@ function aetfInsight(diff){
 const byChips = by => Object.entries(by||{}).sort((a,b)=>Math.abs(b[1])-Math.abs(a[1]))
   .map(([k,v])=>`<span class="${v>0?'up':'down'}" style="white-space:nowrap">${esc(k)} ${(v>0?"+":"")+v.toLocaleString("en-US")}</span>`).join("　");
 
-// ---------- 主動ETF 比較（四欄）：選檔存 localStorage("pm_aetf_cmp")，上限 4 檔 ----------
-const AETF_CMP_KEY = "pm_aetf_cmp", AETF_CMP_MAX = 4;
+// ---------- 主動ETF 比較（多欄橫向捲動）：選檔存 localStorage("pm_aetf_cmp")，上限 AETF_CMP_MAX 檔 ----------
+const AETF_CMP_KEY = "pm_aetf_cmp", AETF_CMP_MAX = 6;
 // 候選代號依集保規模(twse_aum_yi)降冪
 const aetfCmpCodes = latest => Object.keys((latest&&latest.etfs)||{})
   .sort((a,b)=>((latest.etfs[b].twse_aum_yi||0)-(latest.etfs[a].twse_aum_yi||0)));
