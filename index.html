@@ -257,6 +257,7 @@
     資料來源：FinMind（融資／借券／融券借券／當沖／鉅額）·
     <a href="https://github.com/shihpc/taiwan-flow-live-v2">taiwan-flow-live-v2</a>（主動ETF）｜
     <a href="https://github.com/shihpc/postmkt">postmkt</a>
+    <span id="siteVer" hidden></span>
   </footer>
 </div>
 
@@ -3343,6 +3344,33 @@ function ensureChainDaily(){
     .finally(()=>{ state.rrgdLoading = false; if (state.tab === "rrgd") render(); });
 }
 load();
+
+// ---------- 站台版本（footer）----------
+// 查本 repo main 最新 commit 短碼顯示於頁尾（如「版本 09ac097」）。GitHub API 免金鑰
+// 60 req/hr/IP，sessionStorage 快取一次/分頁工作階段；失敗一律靜默隱藏（不影響主功能）。
+// 注意語意：顯示的是 repo main 當前版本；GitHub Pages 部署延遲或瀏覽器快取舊頁時，
+// 可能比實際載入中的頁面新（誤差以分鐘計，屬可接受）。api.github.com 已在 CSP 白名單。
+async function loadSiteVer(){
+  const el = document.getElementById("siteVer");
+  if (!el) return;
+  try{
+    let v = null;
+    try{ v = JSON.parse(sessionStorage.getItem("pm_site_ver")); }catch(e){}
+    if (!v || !v.sha){
+      const r = await fetch("https://api.github.com/repos/shihpc/postmkt/commits/main",
+                            { headers: { Accept: "application/vnd.github+json" } });
+      if (!r.ok) return;
+      const j = await r.json();
+      v = { sha: String(j.sha || "").slice(0, 7),
+            t: (j.commit && j.commit.committer && j.commit.committer.date) || "" };
+      try{ sessionStorage.setItem("pm_site_ver", JSON.stringify(v)); }catch(e){}
+    }
+    if (!v.sha) return;
+    el.textContent = `｜版本 ${v.sha}${v.t ? `（${fmtGenTaipei(v.t)} 台灣）` : ""}`;
+    el.hidden = false;
+  }catch(e){ /* 靜默：版本列缺席不影響任何功能 */ }
+}
+loadSiteVer();
 </script>
 </body>
 </html>
