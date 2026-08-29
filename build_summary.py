@@ -1009,6 +1009,9 @@ def write_output(slot: str, trading_day: str, six: list[dict], synthesis: dict) 
         "generated_at": now.isoformat(timespec="seconds"),
         "slot": slot,
         "date": trading_day,
+        # 產出本檔的程式版本（GitHub Actions 內建 GITHUB_SHA 取前 7 碼；本機跑為 null）。
+        # 前端 meta 列顯示，供追溯每份自動場產出用的是哪版管線（2026-08-29 batch 改版起）。
+        "code_version": (os.environ.get("GITHUB_SHA") or "")[:7] or None,
         "dates": page_dates,
         "six": six,
         "synthesis": synthesis,

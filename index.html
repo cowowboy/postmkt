@@ -2503,7 +2503,7 @@ function sumResultHtml(res, metaPrefix){
   const outSum = six.reduce((t,s)=>t+(s.usage?(s.usage.output_tokens||0):0),0);
   const sy = res.synthesis || {};
   const codeSet = stockCodeSet(); // 一次收集，彙總＋各份原文共用
-  let h = `<div class="insight-meta">${metaPrefix} · 彙總 ${sumTok(sy.usage)} token · ${six.length}份合計 輸入 ${num(inSum)}／輸出 ${num(outSum)} token</div>`;
+  let h = `<div class="insight-meta">${metaPrefix} · 彙總 ${sumTok(sy.usage)} token · ${six.length}份合計 輸入 ${num(inSum)}／輸出 ${num(outSum)} token${res.code_version?` · 版本 ${esc(res.code_version)}`:""}</div>`;
   h += `<div class="insight-card insight-md">${linkifyStocks(mdToHtml(sy.text||""), codeSet)}</div>`;
   h += `<details style="margin:8px 0 14px"><summary style="cursor:pointer;color:var(--muted);font-size:.84rem;padding:4px 2px">▸ 展開 ${six.length} 份原始分析</summary>`;
   for (const s of six){

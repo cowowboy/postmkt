@@ -124,3 +124,18 @@ def test_batch_deadline_budget():
     assert bs.batch_deadline("pm", now - 210 * 60) == 0
     # 耗掉 209.5 分：剩 ~30 秒 < 60 秒門檻 → 同樣跳過
     assert bs.batch_deadline("am", now - int(209.5 * 60)) == 0
+
+
+def test_write_output_code_version(tmp_path, monkeypatch):
+    # 隔離 OUT_DIR 與 ROOT（write_output 會清 data/analyses 舊檔，不能碰真 repo）
+    monkeypatch.setattr(bs, "OUT_DIR", tmp_path)
+    monkeypatch.setattr(bs, "ROOT", tmp_path)
+    monkeypatch.setenv("GITHUB_SHA", "09ac097deadbeef")
+    bs.write_output("pm", "2026-08-29", [], {"text": "x", "usage": None})
+    d = json.loads((tmp_path / "20260829-pm.json").read_text(encoding="utf-8"))
+    assert d["code_version"] == "09ac097"
+    # 本機無 GITHUB_SHA → null
+    monkeypatch.delenv("GITHUB_SHA")
+    bs.write_output("am", "2026-08-29", [], {"text": "x", "usage": None})
+    d2 = json.loads((tmp_path / "20260829-am.json").read_text(encoding="utf-8"))
+    assert d2["code_version"] is None
