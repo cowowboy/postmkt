@@ -2170,15 +2170,15 @@ document.addEventListener("keydown", e => {
   if (e.key==="Enter" && e.target.id==="ghTok"){ const b=document.querySelector("[data-gh-save]"); if(b) b.click(); }
 });
 
-// ---------- 彙總分析（6+1 次呼叫：3 頁面 × Sonnet 5 各 2 次獨立分析 → Opus 4.8 彙總） ----------
+// ---------- 彙總分析（3+1 次呼叫：3 頁面 × Sonnet 5 各 1 次分析 → Opus 4.8 彙總） ----------
 // 三頁 context：盤後分析＝直接複用本頁 insightGatherContext＋insightFetchBrokers；
 // 即時類股動態、新聞晨報＝移植自 v2/news 兩站的 insightGatherContext（資料改由 URL fetch），
 // 段落與欄位保持等價。gather 邏輯改動需與三站前端同步。
 const SUM_V2_LIVE = "https://taiwan-flow-v2.shihpc.workers.dev/live";
 const SUM_V2_RAW = "https://raw.githubusercontent.com/shihpc/taiwan-flow-live-v2/main/data";
 const SUM_NEWS_URL = "https://raw.githubusercontent.com/shihpc/taiwan-stock-news/main/news.json";
-// 同頁跑 2 次 Sonnet 5 獨立分析（非確定性輸出仍提供多樣性），成本考量（2026-07-12 起）；彙總維持 Opus 4.8
-const SUM_MODELS = ["claude-sonnet-5"];   // 2026-08-29 由 2 份砍 1 份（A/B 重疊實證後使用者裁定）
+// 每頁 1 次 Sonnet 5 分析（2026-08-29 由 2 份砍 1 份，A/B 重疊實證後使用者裁定）；彙總維持 Opus 4.8
+const SUM_MODELS = ["claude-sonnet-5"];
 // v2 live.stocks 陣列欄位後備（live.stock_cols 缺時用；與 v2 前端 SC 同步）
 const SUM_SC = ["chg","amt","close","vol","bv","sv","pts","dp","lim","lw","f10","c10","c30","r10","it","fi","y1","y2","ints","nl"];
 // 三站 SYS 原文。本站盤後 SYS 唯一事實來源＝下方 SUM_SYS_POSTMKT（runInsight 直接引用，
@@ -2469,7 +2469,7 @@ async function runSummary(){
     // 彙總（固定 Opus 4.8）：USER＝3 份全文，以【頁面×標籤】標頭分隔＋各份資料日
     state.summaryProg = `摘要完成 ${okCount}/3，彙總中…（Opus 4.8）`; render();
     const pageDate = p => p==="盤後分析" ? dates.postmkt : p==="即時類股動態" ? dates.live : dates.news;
-    const USER = "以下為同一批次產出的 6 份獨立分析（各以【頁面×標籤】標頭分隔，附各份資料日）：\n\n"
+    const USER = `以下為同一批次產出的 ${six.length} 份獨立分析（各以【頁面×標籤】標頭分隔，附各份資料日）：\n\n`
       + six.map(s=>`【${s.page}×${s.tag||s.model}】（該份資料日：${pageDate(s.page)}）\n${s.text}`).join("\n\n────────\n\n");
     const res = await callClaude(key, "claude-opus-4-8", SUM_SYS_SYNTH, USER, signal);
     const result = { at: twNow(), six, synthesis:{ text:res.text, usage:res.usage }, dates };
@@ -2495,17 +2495,17 @@ async function runSummary(){
   state.summaryAbort = null;
   state.summaryLoading = false; state.summaryProg = ""; render();
 }
-// 結果渲染（最新結果／自動檔／手動歷史共用）：彙總全文＋meta＋折疊 6 份原文
+// 結果渲染（最新結果／自動檔／手動歷史共用）：彙總全文＋meta＋折疊全部原始分析（份數依檔案動態）
 const sumTok = u => u ? `輸入 ${num(inTok(u))}／輸出 ${num(u.output_tokens||0)}` : "token數不明";
 function sumResultHtml(res, metaPrefix){
   const six = res.six || [];
   const inSum = six.reduce((t,s)=>t+(s.usage?(inTok(s.usage)):0),0);
   const outSum = six.reduce((t,s)=>t+(s.usage?(s.usage.output_tokens||0):0),0);
   const sy = res.synthesis || {};
-  const codeSet = stockCodeSet(); // 一次收集，彙總＋6份原文共用
-  let h = `<div class="insight-meta">${metaPrefix} · 彙總 ${sumTok(sy.usage)} token · 6份合計 輸入 ${num(inSum)}／輸出 ${num(outSum)} token</div>`;
+  const codeSet = stockCodeSet(); // 一次收集，彙總＋各份原文共用
+  let h = `<div class="insight-meta">${metaPrefix} · 彙總 ${sumTok(sy.usage)} token · ${six.length}份合計 輸入 ${num(inSum)}／輸出 ${num(outSum)} token</div>`;
   h += `<div class="insight-card insight-md">${linkifyStocks(mdToHtml(sy.text||""), codeSet)}</div>`;
-  h += `<details style="margin:8px 0 14px"><summary style="cursor:pointer;color:var(--muted);font-size:.84rem;padding:4px 2px">▸ 展開 6 份原始分析</summary>`;
+  h += `<details style="margin:8px 0 14px"><summary style="cursor:pointer;color:var(--muted);font-size:.84rem;padding:4px 2px">▸ 展開 ${six.length} 份原始分析</summary>`;
   for (const s of six){
     h += `<div class="insight-meta" style="margin-top:12px">${esc(s.page)} × ${esc(s.tag||s.model)}${s.ok?"":"（失敗）"}${s.date?` · 資料日 ${esc(s.date)}`:""} · ${sumTok(s.usage)} token</div>`;
     h += `<div class="insight-card insight-md">${linkifyStocks(mdToHtml(s.text||""), codeSet)}</div>`;

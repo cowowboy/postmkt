@@ -110,3 +110,17 @@ def test_deadline_constants_match_spec():
     assert bs.BATCH_DEADLINE_SEC == {"am": 25 * 60, "pm": 180 * 60}
     assert bs.SUMMARY_MODELS == ["claude-sonnet-5"]
     assert bs.MIN_OK_FOR_SYNTH == 2
+
+
+def test_batch_deadline_budget():
+    import time as _t
+    now = _t.monotonic()
+    # 剛進場：剩餘充裕 → 取場次期限本身（容差 2 秒吃掉 monotonic 經過時間）
+    assert abs(bs.batch_deadline("am", now) - 25 * 60) <= 2
+    assert abs(bs.batch_deadline("pm", now) - 180 * 60) <= 2
+    # 閘門耗掉 100 分：pm 剩 225-100-15=110 分 < 180 分 → 取剩餘預算
+    assert abs(bs.batch_deadline("pm", now - 100 * 60) - 110 * 60) <= 2
+    # 耗掉 210 分：剩 0 → 跳過 batch
+    assert bs.batch_deadline("pm", now - 210 * 60) == 0
+    # 耗掉 209.5 分：剩 ~30 秒 < 60 秒門檻 → 同樣跳過
+    assert bs.batch_deadline("am", now - int(209.5 * 60)) == 0

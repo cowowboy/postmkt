@@ -8,7 +8,7 @@
 | Tab | 資料源 | 內容 |
 |---|---|---|
 | 摘要分析 | 前端彙整以下各 tab ＋ 即時呼叫 Anthropic Claude API | AI 生成以查找 alpha 標的為目標的洞見（首頁預設 tab） |
-| 彙總分析 | 三頁面（本站盤後/即時類股/新聞晨報）context × Sonnet5 各 2 次 ＝ 6 份摘要 → Opus4.8 彙總 | 跨份共振精粹 alpha：方向預測＋進出建議；手動一鍵（近2次存瀏覽器）＋自動場（近3日、讀 `data/summary/`） |
+| 彙總分析 | 三頁面（本站盤後/即時類股/新聞晨報）context × Sonnet5 各 1 次 ＝ 3 份摘要 → Opus4.8 彙總（自動場走 Message Batches 半價） | 跨份共振精粹 alpha：方向預測＋進出建議；手動一鍵（近2次存瀏覽器）＋自動場（近3日、讀 `data/summary/`） |
 | 主動ETF | taiwan-flow-live-v2 `data/aetf/`（跨 repo 唯讀，資料源 FinMind、20+ 檔） | 每日投組快照、主動加減碼**兩欄並列**（主動純額 net_active｜含申贖 raw_change）、進出個股、次產業流向（含ETF名稱）；點 ETF 一律可展開，先看**最新持股組合**（標持股基準日）再看加減碼明細（標資料日，無加減碼顯示「今日無主動加減碼」）；彙整含跨ETF共識與「主動 vs 含申贖」解讀 |
 | 融資券借券 | FinMind 融資/融券/借券 + TWSE TWT72U 兩平台借券餘額 | 個股查詢（點開完整明細）＋整合排行（全市場 2200+ 檔、分組雙列表頭、虛擬捲動） |
 | 當沖 | FinMind `TaiwanStockDayTrading` + `TaiwanStockPrice` + `TradingDailyReport` | 當沖排行（含漲跌幅/振幅/分點推估） |
@@ -174,6 +174,10 @@
   （N/6 份提及）精粹 alpha、給方向預測與進出建議。單份失敗不中止（≥3 份成功才彙總）。手動近 2 次存 localStorage
   `summary_manual`；自動場由 `build_summary.py`＋`summary.yml`（cron 06:23/22:47 台北觸發——提早＋錯開整點
   避開 GitHub cron 壅塞（UTC 00:00 整點延遲常達 2-3 小時），由資料齊全輪詢閘門等資料
+  **2026-08-29 起：每頁 1 份（共 3 份、≥2 份成功才彙總、共振強度 N/3），自動場摘要與彙總改走
+  Message Batches（半價；am 期限 25 分／pm 180 分，超時或單筆失敗逐筆同步回退，另受全場時間預算
+  折算不撞 workflow timeout）。費用估依官方現行價（Sonnet 5 \$2/\$10、Opus 4.8 \$5/\$25）重算約
+  NT$10-12/手動次——原文案 NT$8-10 係以 6+1 次但舊價低估，非成本上升。**
   （2026-07-14 依審計改造：pm 硬等 postmkt/news晚班(>=21:00)/taiwan-flows 三源皆今日、最多 170 分，
   逾時=假日 skip；am 先硬等 morning.json 最多 150 分，通過後軟等 us.json＋news早班(>=06:00)
   最多 60 分、逾時照跑），輸出 `data/summary/YYYYMMDD-{am|pm}.json` 保留近 3 日，前端列表點閱。

@@ -9,12 +9,14 @@
 #
 # 流程：資料齊全閘門（--slot am|pm 輪詢；pm 硬等 postmkt/news晚班/taiwan-flows
 # 三源皆今日，am 硬等 morning.json 後再軟等 us.json＋news早班，詳 wait_gate docstring）
-# → 構建 3 段 context → 呼叫 Anthropic 6 次（3 context × Sonnet 5 各 2 次獨立分析，
-# 最多 3 併發）→ ≥3 份成功才做 1 次 Opus 4.8 彙總 → 輸出
-# data/summary/YYYYMMDD-{am|pm}.json ＋ 重建 index.json ＋ 刪 3 日前舊檔。
+# → 構建 3 段 context → Message Batches 提交 3 份摘要（3 context × Sonnet 5 各 1 次，
+# 半價；超時/單筆失敗逐筆同步回退）→ ≥2 份成功才做 1 次 Opus 4.8 彙總（同樣 batch
+# 優先、回退同步）→ 輸出 data/summary/YYYYMMDD-{am|pm}.json ＋ 重建 index.json ＋
+# 刪 3 日前舊檔。batch 期限受全場時間預算折算（batch_deadline），不會撞 workflow timeout。
 #
 # 金鑰只讀環境變數（ANTHROPIC_API_KEY / FINMIND_TOKEN），絕不落檔、絕不 print。
-# 旗標：--no-wait 跳過齊全閘門；--dry-run 只印三段 context 不呼叫 Anthropic。
+# 旗標：--no-wait 跳過齊全閘門；--sync 全同步不走 batch（除錯）；
+#       --dry-run 只印三段 context 不呼叫 Anthropic。
 
 from __future__ import annotations
 
@@ -773,6 +775,19 @@ def call_claude_retry(model: str, system: str, user_msg: str, label: str) -> dic
 URL_BATCHES = "https://api.anthropic.com/v1/messages/batches"
 BATCH_POLL_SEC = 20
 BATCH_DEADLINE_SEC = {"am": 25 * 60, "pm": 180 * 60}
+# 全場時間預算：兩包 batch（摘要、彙總）各自的期限若都取滿，加上閘門硬等（pm 170 分/
+# am 210 分）會超過 summary.yml timeout-minutes 240，job 被砍時連同步回退都來不及、
+# 整場無產出。故每包期限＝min(場次期限, 全場剩餘預算−同步保留)；剩餘不足 60 秒直接
+# 跳過 batch 走同步。t_start 從 main 進場（閘門之前）起算。
+JOB_BUDGET_SEC = 225 * 60    # summary.yml timeout-minutes 240 留 15 分收尾（commit/push）
+SYNC_RESERVE_SEC = 15 * 60   # 保留給同步回退（最多 4 次呼叫）的時間
+
+
+def batch_deadline(slot: str, t_start: float) -> int:
+    """本包 batch 可用秒數；回 0 表示剩餘預算不足、應跳過 batch 直接同步。"""
+    remain = JOB_BUDGET_SEC - (time.monotonic() - t_start) - SYNC_RESERVE_SEC
+    dl = int(min(BATCH_DEADLINE_SEC[slot], remain))
+    return dl if dl >= 60 else 0
 
 
 def call_claude_batch(reqs: dict, deadline_sec: int, label: str) -> dict:
@@ -1118,6 +1133,7 @@ def main() -> None:
     ap.add_argument("--dry-run", action="store_true", help="只印三段 context，不呼叫 Anthropic（供驗收）")
     args = ap.parse_args()
 
+    t_start = time.monotonic()   # 全場時間預算起點（batch_deadline 用，含閘門耗時）
     if not args.dry_run:
         anth_key()  # 缺 Secret 秒失敗（fail-fast），不等閘門輪詢完才發現
 
@@ -1148,13 +1164,14 @@ def main() -> None:
 
     # 3 份摘要：3 context × Sonnet 5 各 1 次。主路徑走 Message Batches（半價非同步），
     # batch 超時／單筆失敗 → 該筆同步回退（call_claude_retry，retry 1 次後 ok:false 佔位）
-    deadline = BATCH_DEADLINE_SEC[args.slot]
+    deadline = batch_deadline(args.slot, t_start)
     jobs = [(p, model, "Sonnet5") for p in pages for model in SUMMARY_MODELS]
     reqs = {f"s{i}": (model, p["sys"], p["user"])
             for i, (p, model, _tag) in enumerate(jobs) if not p["empty"]}
     print(f"呼叫 Anthropic：{len(reqs)} 份摘要"
-          f"（{'同步模式' if args.sync else f'Batch 半價，期限 {deadline // 60} 分'}）…", flush=True)
-    bres = {} if args.sync or not reqs else call_claude_batch(reqs, deadline, "摘要")
+          f"（{'同步模式' if args.sync or not deadline else f'Batch 半價，期限 {deadline // 60} 分'}）…",
+          flush=True)
+    bres = {} if args.sync or not reqs or not deadline else call_claude_batch(reqs, deadline, "摘要")
 
     six = []
     for i, (p, model, tag) in enumerate(jobs):
@@ -1185,8 +1202,9 @@ def main() -> None:
     synth_user = "\n\n".join(blocks)
     print(f"彙總中…（{SYNTH_MODEL}）", flush=True)
     synth = None
-    if not args.sync:
-        got = call_claude_batch({"synth": (SYNTH_MODEL, SYS_SYNTH, synth_user)}, deadline, "彙總").get("synth")
+    dl2 = batch_deadline(args.slot, t_start)   # 重算剩餘預算（摘要 batch 可能耗掉大半）
+    if not args.sync and dl2:
+        got = call_claude_batch({"synth": (SYNTH_MODEL, SYS_SYNTH, synth_user)}, dl2, "彙總").get("synth")
         if got:
             synth = {"ok": True, "via": "batch", **got}
     if synth is None:
