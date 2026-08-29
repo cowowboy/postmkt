@@ -16,6 +16,10 @@ on:
         type: choice
         options: ["", "am", "pm"]
         default: ""
+      no_wait:
+        description: "跳過資料齊全閘門（--no-wait；測試/補跑用，週末假日也會照跑）"
+        type: boolean
+        default: false
 
 permissions:
   contents: write
@@ -60,7 +64,7 @@ jobs:
         env:
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
           FINMIND_TOKEN: ${{ secrets.FINMIND_TOKEN }}
-        run: python build_summary.py --slot ${{ steps.slot.outputs.slot }}
+        run: python build_summary.py --slot ${{ steps.slot.outputs.slot }} ${{ inputs.no_wait && '--no-wait' || '' }}
 
       - name: Commit and push
         uses: ./.github/actions/commit-data
