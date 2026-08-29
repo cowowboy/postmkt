@@ -271,7 +271,7 @@ const TABS = [
 ];
 const SUBS = {
   insight:"AI 摘要分析：彙整本頁各 tab 資料（主動ETF／三大法人買賣超／融借券／當沖／鉅額／零股盤中／指定分點），由 Claude 生成以查找 alpha 標的為目標的洞見。前端即時呼叫，token 由你自備、只存本機瀏覽器。非投資建議、非預測，僅描述歷史統計傾向。",
-  summary:"AI 彙總分析：一鍵 6+1 次 Claude 呼叫——3 個頁面（盤後分析／即時類股動態／新聞晨報）× Sonnet 5 各 2 次獨立分析共 6 份摘要，再由 Opus 4.8 融會貫通彙總出跨份共振的精華 alpha。費用約每次 NT$8-10（摘要用 Sonnet 5、彙總用 Opus），token 由你自備、只存本機瀏覽器。另可閱讀 GitHub Actions 早晚場自動產出。非投資建議。",
+  summary:"AI 彙總分析：一鍵 3+1 次 Claude 呼叫——3 個頁面（盤後分析／即時類股動態／新聞晨報）× Sonnet 5 各 1 次分析共 3 份摘要，再由 Opus 4.8 融會貫通彙總出跨份共振的精華 alpha。費用約每次 NT$10-12（摘要用 Sonnet 5、彙總用 Opus），token 由你自備、只存本機瀏覽器。另可閱讀 GitHub Actions 早晚場自動產出。非投資建議。",
   aetf:"主動式ETF每日投組快照＋主動加減碼（資料源：taiwan-flow-live-v2 via FinMind，每日揭露）。加減碼兩欄並列：主動純額（排除申贖）｜含申贖（原始總變動）。",
   lending:"借券系統(SLB)＋證商營業處所(NLB)兩平台餘額、Short Interest、融資融券、當沖、三大法人買賣超整合排行，依兩平台借券餘額排序。點個股展開完整明細。單位：張／千元／億元。",
   daytrade:"當沖成交金額排行。分點推估為估算法，非逐筆交易證據。",
@@ -2041,7 +2041,7 @@ async function insightFetchBrokers(primary){
 // 此處採標準價 $3/$15（保守、不低估；intro 到期即一致）。USD_TWD 為約略匯率、會浮動，僅供估算。
 const INSIGHT_PRICES = {            // [input, output] USD / 1M tokens
   "claude-opus-4-8": [5, 25],
-  "claude-sonnet-5": [3, 15],
+  "claude-sonnet-5": [2, 10],       // 2026-08-29 依官方現行價更正（原誤植 3/15）
 };
 const USD_TWD = 31.5;
 function insightCostText(usage, model){
@@ -2178,7 +2178,7 @@ const SUM_V2_LIVE = "https://taiwan-flow-v2.shihpc.workers.dev/live";
 const SUM_V2_RAW = "https://raw.githubusercontent.com/shihpc/taiwan-flow-live-v2/main/data";
 const SUM_NEWS_URL = "https://raw.githubusercontent.com/shihpc/taiwan-stock-news/main/news.json";
 // 同頁跑 2 次 Sonnet 5 獨立分析（非確定性輸出仍提供多樣性），成本考量（2026-07-12 起）；彙總維持 Opus 4.8
-const SUM_MODELS = ["claude-sonnet-5","claude-sonnet-5"];
+const SUM_MODELS = ["claude-sonnet-5"];   // 2026-08-29 由 2 份砍 1 份（A/B 重疊實證後使用者裁定）
 // v2 live.stocks 陣列欄位後備（live.stock_cols 缺時用；與 v2 前端 SC 同步）
 const SUM_SC = ["chg","amt","close","vol","bv","sv","pts","dp","lim","lw","f10","c10","c30","r10","it","fi","y1","y2","ints","nl"];
 // 三站 SYS 原文。本站盤後 SYS 唯一事實來源＝下方 SUM_SYS_POSTMKT（runInsight 直接引用，
@@ -2212,7 +2212,7 @@ const SUM_SYS_LIVE = "你是積極的台股盤中即時資金流分析師。任�
   + "最後一行附免責：以上為盤中即時資金結構的模型研判、資料為準即時快照、未經歷史回測、非投資建議、非保證獲利，僅供你自行參考。";
 const SUM_SYS_NEWS = "你是積極的台股新聞與籌碼交叉分析師。任務：彙整本頁新聞焦點與晨報籌碼資料，產出以「找出具新聞催化＋籌碼支持的 alpha 標的」為核心的洞見與可操作建議。要求：(1) 進出建議一律以『同向共振』為基礎——新聞催化與籌碼方向一致才算有效訊號（例：個股利多新聞密集＋投信連買或主動ETF加碼＝催化與籌碼共振偏多；利空新聞＋法人賣超＝共振偏空）。(2) 只聚焦同向共振訊號；背離（如利多新聞但法人大賣）不適合作為進出參考，一律略過、不呈現、不描述、不列背離段落。(3) 依資料呈現的傾向做方向性判斷，對共振標的給偏多／偏空看法與明確進出建議。(4) 每條洞見／建議必須點名個股代號＋可追溯的具體依據(新聞標題與日期、法人買賣超數字、連買天數等)，禁止空泛臆測。(5) 洞見與建議合計不超過 10 條，挑共振最強、依據最紮實的。(6) 建議個股以 alpha 為首要考量，優先納入中小型標的；大型權值股(台灣50成分、2330台積電/2317鴻海/2454聯發科、金控股等)合計不得超過清單一半——上限而非目標，不必硬湊。(7) 新聞僅代表資訊面、非事實核實，判讀須註明消息面屬性；美股與晨報資料若與主資料日不同，可與其他資料串連解讀，但須標注各段自己的資料日、並註明該串連跨越不同交易日。(8) 繁體中文、markdown(## 標題、- 清單、**粗體**、可用表格)。結構：## 核心洞見與操作建議(≤10 條，每條＝個股代號名稱 ｜ 共振訊號 ｜ 依據 ｜ 方向與進出建議；大型股≤一半)／## 訊號邏輯(簡述共振推論)。不要有背離段落。最後一行附免責：以上為新聞與籌碼交叉的模型即時研判、未經歷史回測、非投資建議、非保證獲利，僅供你自行參考。";
 // 彙總 SYS（規格原文；與自動場 build_summary.py 共用同一段文字，改動需同步）
-const SUM_SYS_SYNTH = "你是台股首席策略師。以下是同一天由三個資料面向（盤後籌碼、即時資金流、新聞×晨報）×每面向兩次獨立分析產出的 6 份獨立分析。任務：融會貫通、去蕪存菁，產出單一精華彙總。要求：(1)跨份共振優先——同一標的被多份分析同時點名且方向一致，即為最強 alpha 訊號，優先呈現並標注被幾份提及；僅單一份提及的標的降權或捨棄。(2)對精選標的明確給出：方向預測（偏多/偏空）、進出建議（進場條件/出場條件/停損思路）、投資建議與部位思路。(3)每檔標的附跨份依據摘要（哪幾份、什麼數據）。(4)大型權值股≤清單一半（上限非目標）。(5)精選標的若子分析引用了帶量數據，沿用『當日成交量 ≥ 1,000 張』門檻；來自即時類股動態或新聞晨報、本無個股級成交量佐證者不受此限，可納入選評，但須於依據摘要標注『量能未知』。(6)6 份分析若日期標注不同資料日，原則上嚴禁跨日串連；唯新聞晨報（含美股）的資料日不受此限，可與其他資料串連，但須標注其資料日。(7)結構：## 精華 alpha 標的（≤6 檔，每檔＝代號名稱｜共振強度(N/6份提及)｜方向預測｜進出建議｜依據摘要）／## 盤勢綜合研判（≤5行）／## 分析分歧備註（兩次獨立分析結論明顯不同處，1-3行，無則免）。繁體中文 markdown。最後附免責：以上為多模型彙總之即時研判、未經歷史回測、非保證獲利，投資盈虧自負，僅供你自行參考。";
+const SUM_SYS_SYNTH = "你是台股首席策略師。以下是同一天由三個資料面向（盤後籌碼、即時資金流、新聞×晨報）各一次分析產出的 3 份獨立分析。任務：融會貫通、去蕪存菁，產出單一精華彙總。要求：(1)跨份共振優先——同一標的被多份分析同時點名且方向一致，即為最強 alpha 訊號，優先呈現並標注被幾份提及；僅單一份提及的標的降權或捨棄。(2)對精選標的明確給出：方向預測（偏多/偏空）、進出建議（進場條件/出場條件/停損思路）、投資建議與部位思路。(3)每檔標的附跨份依據摘要（哪幾份、什麼數據）。(4)大型權值股≤清單一半（上限非目標）。(5)精選標的若子分析引用了帶量數據，沿用『當日成交量 ≥ 1,000 張』門檻；來自即時類股動態或新聞晨報、本無個股級成交量佐證者不受此限，可納入選評，但須於依據摘要標注『量能未知』。(6)3 份分析若日期標注不同資料日，原則上嚴禁跨日串連；唯新聞晨報（含美股）的資料日不受此限，可與其他資料串連，但須標注其資料日。(7)結構：## 精華 alpha 標的（≤6 檔，每檔＝代號名稱｜共振強度(N/3份提及)｜方向預測｜進出建議｜依據摘要）／## 盤勢綜合研判（≤5行）。繁體中文 markdown。最後附免責：以上為多模型彙總之即時研判、未經歷史回測、非保證獲利，投資盈虧自負，僅供你自行參考。";
 
 // 頁面1：盤後分析——直接複用本頁 insightGatherContext＋insightFetchBrokers
 // state.pm／state.aetf／state.tf 由頁面載入時的 load() 背景抓取；若使用者一進站就直接點
@@ -2440,23 +2440,22 @@ async function runSummary(){
       { page:"新聞晨報", g:gNews, sys:SUM_SYS_NEWS, user:sumUserNews },
     ];
     const dates = { postmkt:gPost.primary||"?", live:gLive.primary||"?", news:gNews.primary||"?" };
-    // 6 份摘要並行呼叫；單份失敗不中止，以佔位文字入列
+    // 3 份摘要並行呼叫（2026-08-29 由每頁 2 份砍半，py 自動場同規則）；單份失敗不中止，以佔位文字入列
     let done = 0;
-    state.summaryProg = "摘要 0/6：6 份並行呼叫中…"; render();
+    state.summaryProg = "摘要 0/3：3 份並行呼叫中…"; render();
     const jobs = [];
     for (const p of pages){
       SUM_MODELS.forEach((model, mi)=>{
-        // 同頁兩份以 A/B 標籤去重（six[]、彙總 USER 標頭、渲染共用；py 自動場同規則）
-        const tag = `Sonnet5-${mi===0?"A":"B"}`;
+        const tag = "Sonnet5";
         const label = `${p.page}×${tag}`;
         jobs.push((async ()=>{
           try{
             if (p.g.err) throw new Error("（資料抓取失敗：" + p.g.err + "）");
             const res = await callClaude(key, model, p.sys, p.user(p.g), signal);
-            done++; state.summaryProg = `摘要 ${done}/6：${label} 完成`; render();
+            done++; state.summaryProg = `摘要 ${done}/3：${label} 完成`; render();
             return { page:p.page, model, tag, text:res.text, stop_reason:res.stop_reason, usage:res.usage, ok:true };
           }catch(e){
-            done++; state.summaryProg = `摘要 ${done}/6：${label} 失敗`; render();
+            done++; state.summaryProg = `摘要 ${done}/3：${label} 失敗`; render();
             return { page:p.page, model, tag, text:`（該份產出失敗：${String(e.message||e)}）`, stop_reason:null, usage:null, ok:false };
           }
         })());
@@ -2466,9 +2465,9 @@ async function runSummary(){
     // 手動中斷：整場停止（各份已以佔位文字標失敗），不彙總、不寫入本機/雲端
     if (signal.aborted) throw new Error("已手動中斷");
     const okCount = six.filter(s=>s.ok).length;
-    if (okCount < 3) throw new Error(`僅 ${okCount}/6 份摘要成功（需 ≥3 份才彙總），本次中止`);
-    // 彙總（固定 Opus 4.8）：USER＝6 份全文，以【頁面×標籤】標頭分隔（同頁兩份 A/B 去重）＋各份資料日
-    state.summaryProg = `摘要完成 ${okCount}/6，彙總中…（Opus 4.8）`; render();
+    if (okCount < 2) throw new Error(`僅 ${okCount}/3 份摘要成功（需 ≥2 份才彙總），本次中止`);
+    // 彙總（固定 Opus 4.8）：USER＝3 份全文，以【頁面×標籤】標頭分隔＋各份資料日
+    state.summaryProg = `摘要完成 ${okCount}/3，彙總中…（Opus 4.8）`; render();
     const pageDate = p => p==="盤後分析" ? dates.postmkt : p==="即時類股動態" ? dates.live : dates.news;
     const USER = "以下為同一批次產出的 6 份獨立分析（各以【頁面×標籤】標頭分隔，附各份資料日）：\n\n"
       + six.map(s=>`【${s.page}×${s.tag||s.model}】（該份資料日：${pageDate(s.page)}）\n${s.text}`).join("\n\n────────\n\n");
@@ -2534,10 +2533,10 @@ function sumLoadAutoIdx(){
     .then(()=>{ if (state.tab==="summary") render(); });
 }
 function summaryHtml(){
-  let h = sec("彙總分析", "3 頁 × 2 模型 = 6 份摘要 → Opus 4.8 彙總");
+  let h = sec("彙總分析", "3 頁各 1 份摘要 → Opus 4.8 彙總");
   // key 輸入區：與摘要分析 tab 共用同一組 anthropic_key／同一套 data-anth-save UI
   if (!anthKey()){
-    h += `<div class="mcard" style="font-size:.84rem">此功能會用你自己的 Anthropic API token 連續呼叫 Claude 7 次（6 份摘要＋1 次彙總）。`
+    h += `<div class="mcard" style="font-size:.84rem">此功能會用你自己的 Anthropic API token 連續呼叫 Claude 4 次（3 份摘要＋1 次彙總）。`
       + `token 只存在你這台瀏覽器的 localStorage（與「摘要分析」tab 共用同一組），不會寫入網站或傳給 Anthropic 以外的任何地方。`
       + `<div class="qrow" style="margin-top:8px"><input id="anthTok" type="password" placeholder="貼上 Anthropic API token（sk-ant-…）">`
       + `<span class="qbtn" data-anth-save>儲存</span></div></div>`;
@@ -2555,7 +2554,7 @@ function summaryHtml(){
     + (anthKey()?`<span class="mut" style="font-size:.74rem;cursor:pointer" data-anth-clear>Anthropic token已設定（點此清除）</span>`:"")
     + (ghToken()?`<span class="mut" style="font-size:.74rem;cursor:pointer" data-gh-clear>GitHub token已設定（點此清除）</span>`:"")
     + `</div><div class="insight-note">流程：並行抓齊三頁資料（盤後分析＝本頁各 tab＋指定分點／即時類股動態＝v2 Worker 即時快照／新聞晨報＝新聞+晨報+美股）`
-    + `→ 各頁以 Sonnet 5 各跑 2 次獨立分析產出 6 份摘要 → 由 Opus 4.8 融會貫通彙總。約需 1-3 分鐘、費用約每次 NT$8-10（摘要用 Sonnet 5、彙總用 Opus，計入你的 Anthropic 帳戶）。`
+    + `→ 各頁以 Sonnet 5 各跑 1 次分析產出 3 份摘要 → 由 Opus 4.8 融會貫通彙總。約需 1-3 分鐘、費用約每次 NT$10-12（摘要用 Sonnet 5、彙總用 Opus，計入你的 Anthropic 帳戶）。`
     + `盤前/盤後執行時即時頁天然單薄屬預期。</div></div>`;
   if (state.summaryLoading){
     h += `<div class="empty">${esc(state.summaryProg||"執行中…")}`

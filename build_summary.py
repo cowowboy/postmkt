@@ -26,7 +26,6 @@ import os
 import re
 import sys
 import time
-from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 import requests
@@ -56,11 +55,11 @@ URL_ANTHROPIC = "https://api.anthropic.com/v1/messages"
 
 # 與 postmkt/index.html 的 INSIGHT_BROKERS / SUM_MODELS 對齊
 INSIGHT_BROKERS = ["9268", "9800", "9600", "9A00"]
-# 同頁跑 2 次 Sonnet 5 獨立分析（非確定性輸出仍提供多樣性），成本考量（2026-07-12 起）；彙總維持 Opus 4.8
-SUMMARY_MODELS = ["claude-sonnet-5", "claude-sonnet-5"]
+# 每頁 1 次 Sonnet 5 分析（2026-08-29 由每頁 2 次砍半——8 場 24 組 A/B 實證：標的重疊
+# Jaccard≈0.5、方向零衝突、精華標的 98% 取自 A∩B，使用者裁定成本優先）；彙總維持 Opus 4.8
+SUMMARY_MODELS = ["claude-sonnet-5"]
 SYNTH_MODEL = "claude-opus-4-8"
-MAX_WORKERS = 3          # 併發上限，防 API 限流
-MIN_OK_FOR_SYNTH = 3     # 6 份中至少幾份成功才彙總
+MIN_OK_FOR_SYNTH = 2     # 3 份中至少幾份成功才彙總
 
 # v2/index.html 的 SC：live.stocks 陣列欄位順序（live.stock_cols 缺時的後備）
 SC = ["chg", "amt", "close", "vol", "bv", "sv", "pts", "dp", "lim", "lw",
@@ -691,16 +690,16 @@ SYS_NEWS = (
 
 SYS_SYNTH = (
     "你是台股首席策略師。以下是同一天由三個資料面向（盤後籌碼、即時資金流、新聞×晨報）"
-    "×每面向兩次獨立分析產出的 6 份獨立分析。任務：融會貫通、去蕪存菁，產出單一精華彙總。"
+    "各一次分析產出的 3 份獨立分析。任務：融會貫通、去蕪存菁，產出單一精華彙總。"
     "要求：(1)跨份共振優先——同一標的被多份分析同時點名且方向一致，即為最強 alpha 訊號，"
     "優先呈現並標注被幾份提及；僅單一份提及的標的降權或捨棄。"
     "(2)對精選標的明確給出：方向預測（偏多/偏空）、進出建議（進場條件/出場條件/停損思路）、投資建議與部位思路。"
     "(3)每檔標的附跨份依據摘要（哪幾份、什麼數據）。"
     "(4)大型權值股≤清單一半（上限非目標）。"
     "(5)精選標的若子分析引用了帶量數據，沿用『當日成交量 ≥ 1,000 張』門檻；來自即時類股動態或新聞晨報、本無個股級成交量佐證者不受此限，可納入選評，但須於依據摘要標注『量能未知』。"
-    "(6)6 份分析若日期標注不同資料日，原則上嚴禁跨日串連；唯新聞晨報（含美股）的資料日不受此限，可與其他資料串連，但須標注其資料日。"
-    "(7)結構：## 精華 alpha 標的（≤6 檔，每檔＝代號名稱｜共振強度(N/6份提及)｜方向預測｜進出建議｜依據摘要）"
-    "／## 盤勢綜合研判（≤5行）／## 分析分歧備註（兩次獨立分析結論明顯不同處，1-3行，無則免）。"
+    "(6)3 份分析若日期標注不同資料日，原則上嚴禁跨日串連；唯新聞晨報（含美股）的資料日不受此限，可與其他資料串連，但須標注其資料日。"
+    "(7)結構：## 精華 alpha 標的（≤6 檔，每檔＝代號名稱｜共振強度(N/3份提及)｜方向預測｜進出建議｜依據摘要）"
+    "／## 盤勢綜合研判（≤5行）。"
     "繁體中文 markdown。最後附免責：以上為多模型彙總之即時研判、未經歷史回測、非保證獲利，投資盈虧自負，僅供你自行參考。"
 )
 
@@ -714,28 +713,39 @@ def anth_key() -> str:
     return k
 
 
-def call_claude(model: str, system: str, user_msg: str) -> dict:
-    """對齊三站前端 callClaude()：adaptive thinking + effort medium + max_tokens 16000。"""
-    r = requests.post(URL_ANTHROPIC,
-                      headers={"content-type": "application/json", "x-api-key": anth_key(),
-                               "anthropic-version": "2023-06-01"},
-                      json={"model": model, "max_tokens": 16000,
-                            "thinking": {"type": "adaptive"}, "output_config": {"effort": "medium"},
-                            "system": system, "messages": [{"role": "user", "content": user_msg}]},
-                      timeout=(15, 600))
-    j = r.json()
-    if not r.ok or j.get("type") == "error":
-        raise RuntimeError((j.get("error") or {}).get("message") or f"HTTP {r.status_code}")
+def _anth_headers() -> dict:
+    return {"content-type": "application/json", "x-api-key": anth_key(),
+            "anthropic-version": "2023-06-01"}
+
+
+def msg_params(model: str, system: str, user_msg: str) -> dict:
+    """單一請求參數（同步與 batch 兩路共用）：對齊三站前端 callClaude()——
+    adaptive thinking + effort medium + max_tokens 16000。"""
+    return {"model": model, "max_tokens": 16000,
+            "thinking": {"type": "adaptive"}, "output_config": {"effort": "medium"},
+            "system": system, "messages": [{"role": "user", "content": user_msg}]}
+
+
+def parse_message(j: dict) -> dict:
+    """message 物件 → {text, stop_reason, usage}（同步與 batch 兩路共用），異常一律丟例外。"""
     stop = j.get("stop_reason")
     if stop == "refusal":
         raise RuntimeError("模型基於安全政策婉拒本次請求")
     text = "\n".join(b.get("text", "") for b in (j.get("content") or []) if b.get("type") == "text")
     # adaptive thinking 吃滿 max_tokens 時只回 thinking block、沒有 text block，text 會靜靜落成
-    # 空字串並以 ok:true 進彙總（2026-07-27 自動場：6 份中 3 份 output=8000/thinking≈8000、
-    # text 為空，彙總層只好自行宣告「為空白」）。當失敗丟出交給 retry，仍空則落 ok:false 佔位。
+    # 空字串並以 ok:true 進彙總（2026-07-27 自動場實例）。當失敗丟出交給 retry／回退。
     if not text.strip():
         raise RuntimeError(f"回應無 text 內容（stop_reason={stop}），可能是 thinking 佔滿 max_tokens")
     return {"text": text, "stop_reason": stop, "usage": j.get("usage")}
+
+
+def call_claude(model: str, system: str, user_msg: str) -> dict:
+    r = requests.post(URL_ANTHROPIC, headers=_anth_headers(),
+                      json=msg_params(model, system, user_msg), timeout=(15, 600))
+    j = r.json()
+    if not r.ok or j.get("type") == "error":
+        raise RuntimeError((j.get("error") or {}).get("message") or f"HTTP {r.status_code}")
+    return parse_message(j)
 
 
 def call_claude_retry(model: str, system: str, user_msg: str, label: str) -> dict:
@@ -752,6 +762,79 @@ def call_claude_retry(model: str, system: str, user_msg: str, label: str) -> dic
             if attempt == 1:
                 time.sleep(5)
     return {"ok": False, "text": f"（該份產出失敗：{last}）", "stop_reason": None, "usage": None}
+
+
+# ---------- Message Batches（2026-08-29：自動場改走半價非同步批次） ----------
+# 官方規格：多數 batch 1 小時內完成、上限 24 小時、全部 token 半價。完成時間無保證，
+# 故設每包期限：am 25 分（早上有時效，超時 cancel 改同步補做）、pm 180 分（無時效壓力，
+# 但須留在 summary.yml timeout 240 分內，超時同樣回退——batch 尾端延遲不可讓全場死掉）。
+# expired／errored／canceled 的個別請求同樣走同步回退。前端手動場不走 batch（互動要即時）。
+
+URL_BATCHES = "https://api.anthropic.com/v1/messages/batches"
+BATCH_POLL_SEC = 20
+BATCH_DEADLINE_SEC = {"am": 25 * 60, "pm": 180 * 60}
+
+
+def call_claude_batch(reqs: dict, deadline_sec: int, label: str) -> dict:
+    """提交一包請求並輪詢至 ended 或期限。reqs = {custom_id: (model, system, user_msg)}。
+    回 {custom_id: {text,stop_reason,usage} 或 None}；None＝該筆需同步回退。
+    整包提交失敗／超時 cancel／結果下載失敗 → 全部 None（整包回退），絕不讓場失敗。"""
+    none_all = {cid: None for cid in reqs}
+    try:
+        r = requests.post(URL_BATCHES, headers=_anth_headers(),
+                          json={"requests": [{"custom_id": cid,
+                                              "params": msg_params(*p)} for cid, p in reqs.items()]},
+                          timeout=(15, 120))
+        j = r.json()
+        if not r.ok or j.get("type") == "error":
+            raise RuntimeError((j.get("error") or {}).get("message") or f"HTTP {r.status_code}")
+        bid, status = j["id"], j.get("processing_status")
+        print(f"  batch[{label}] 已提交 {bid}（{len(reqs)} 筆，期限 {deadline_sec // 60} 分）", flush=True)
+    except Exception as e:
+        print(f"  batch[{label}] 提交失敗（{e}）→ 全數同步回退", flush=True)
+        return none_all
+    t0 = time.monotonic()
+    results_url = None
+    while status != "ended":
+        if time.monotonic() - t0 > deadline_sec:
+            print(f"  batch[{label}] 超過期限仍未 ended（{status}）→ cancel 並全數同步回退", flush=True)
+            try:
+                requests.post(f"{URL_BATCHES}/{bid}/cancel", headers=_anth_headers(), timeout=(15, 60))
+            except Exception:
+                pass
+            return none_all
+        time.sleep(BATCH_POLL_SEC)
+        try:
+            jj = requests.get(f"{URL_BATCHES}/{bid}", headers=_anth_headers(), timeout=(15, 60)).json()
+            status = jj.get("processing_status") or status
+            results_url = jj.get("results_url") or results_url
+        except Exception as e:
+            print(f"  batch[{label}] 輪詢暫時失敗（{e}），續等", flush=True)
+    try:
+        rr = requests.get(results_url or f"{URL_BATCHES}/{bid}/results",
+                          headers=_anth_headers(), timeout=(15, 300))
+        rr.raise_for_status()
+        out = dict(none_all)
+        for line in rr.text.splitlines():
+            if not line.strip():
+                continue
+            row = json.loads(line)
+            cid, res = row.get("custom_id"), row.get("result") or {}
+            if cid not in out:
+                continue
+            if res.get("type") == "succeeded":
+                try:
+                    out[cid] = parse_message(res.get("message") or {})
+                except Exception as e:
+                    print(f"  batch[{label}] {cid} 內容異常（{e}）→ 該筆同步回退", flush=True)
+            else:
+                print(f"  batch[{label}] {cid} 結果 {res.get('type')} → 該筆同步回退", flush=True)
+        took = int(time.monotonic() - t0)
+        print(f"  batch[{label}] 完成（{took}s，{sum(1 for v in out.values() if v)}/{len(out)} 筆成功）", flush=True)
+        return out
+    except Exception as e:
+        print(f"  batch[{label}] 結果下載失敗（{e}）→ 全數同步回退", flush=True)
+        return none_all
 
 
 # ---------- 資料齊全閘門 ----------
@@ -1031,6 +1114,7 @@ def main() -> None:
     ap.add_argument("--slot", choices=["am", "pm"], required=True,
                     help="場次：am=清晨場（cron 06:23 台北）/ pm=晚場（cron 22:47 台北）")
     ap.add_argument("--no-wait", action="store_true", help="跳過資料齊全輪詢閘門")
+    ap.add_argument("--sync", action="store_true", help="不走 Batch、全程同步呼叫（除錯／緊急用）")
     ap.add_argument("--dry-run", action="store_true", help="只印三段 context，不呼叫 Anthropic（供驗收）")
     args = ap.parse_args()
 
@@ -1062,24 +1146,33 @@ def main() -> None:
         print("三個頁面 context 全部為空（資料源皆載入失敗），本場中止", flush=True)
         sys.exit(1)
 
-    # 6 份摘要：3 context × Sonnet 5 各 2 次，最多 3 併發、單份失敗 retry 1 次後 ok:false 佔位
-    # 同頁兩份以 A/B 標籤去重（six[] 與彙總 USER 標頭共用；與前端 index.html 同規則）
-    jobs = [(p, model, f"Sonnet5-{'A' if mi == 0 else 'B'}")
-            for p in pages for mi, model in enumerate(SUMMARY_MODELS)]
-    print(f"呼叫 Anthropic：{len(jobs)} 份摘要（併發上限 {MAX_WORKERS}）…", flush=True)
+    # 3 份摘要：3 context × Sonnet 5 各 1 次。主路徑走 Message Batches（半價非同步），
+    # batch 超時／單筆失敗 → 該筆同步回退（call_claude_retry，retry 1 次後 ok:false 佔位）
+    deadline = BATCH_DEADLINE_SEC[args.slot]
+    jobs = [(p, model, "Sonnet5") for p in pages for model in SUMMARY_MODELS]
+    reqs = {f"s{i}": (model, p["sys"], p["user"])
+            for i, (p, model, _tag) in enumerate(jobs) if not p["empty"]}
+    print(f"呼叫 Anthropic：{len(reqs)} 份摘要"
+          f"（{'同步模式' if args.sync else f'Batch 半價，期限 {deadline // 60} 分'}）…", flush=True)
+    bres = {} if args.sync or not reqs else call_claude_batch(reqs, deadline, "摘要")
 
-    def run_one(job):
-        p, model, tag = job
+    six = []
+    for i, (p, model, tag) in enumerate(jobs):
         label = f"{p['page']}×{tag}"
         if p["empty"]:
-            return {"page": p["page"], "model": model, "tag": tag, "date": p["primary"],
-                    "ok": False, "text": "（該份產出失敗：資料源載入失敗，context 為空）",
-                    "stop_reason": None, "usage": None}
-        res = call_claude_retry(model, p["sys"], p["user"], label)
-        return {"page": p["page"], "model": model, "tag": tag, "date": p["primary"], **res}
-
-    with ThreadPoolExecutor(max_workers=MAX_WORKERS) as pool:
-        six = list(pool.map(run_one, jobs))
+            six.append({"page": p["page"], "model": model, "tag": tag, "date": p["primary"],
+                        "ok": False, "text": "（該份產出失敗：資料源載入失敗，context 為空）",
+                        "stop_reason": None, "usage": None})
+            continue
+        got = bres.get(f"s{i}")
+        if got:
+            print(f"  ✓ {label}（batch）", flush=True)
+            six.append({"page": p["page"], "model": model, "tag": tag, "date": p["primary"],
+                        "ok": True, "via": "batch", **got})
+        else:
+            res = call_claude_retry(model, p["sys"], p["user"], f"{label}（同步{'' if args.sync else '回退'}）")
+            six.append({"page": p["page"], "model": model, "tag": tag, "date": p["primary"],
+                        "via": "sync", **res})
 
     ok_n = sum(1 for s in six if s["ok"])
     print(f"摘要完成：{ok_n}/{len(six)} 份成功", flush=True)
@@ -1087,16 +1180,23 @@ def main() -> None:
         print(f"成功份數不足 {MIN_OK_FOR_SYNTH} 份，不做彙總，本場失敗", flush=True)
         sys.exit(1)
 
-    # 彙總：6 份全文以【頁面×標籤】標頭分隔（同頁兩份 A/B 去重）、附各份資料日
+    # 彙總：3 份全文以【頁面×標籤】標頭分隔、附各份資料日；同樣 batch 優先、超時/失敗同步回退
     blocks = [f"【{s['page']}×{s.get('tag') or s['model']}】（資料日 {s['date'] or '—'}）\n{s['text']}" for s in six]
     synth_user = "\n\n".join(blocks)
     print(f"彙總中…（{SYNTH_MODEL}）", flush=True)
-    synth = call_claude_retry(SYNTH_MODEL, SYS_SYNTH, synth_user, f"彙總×{SYNTH_MODEL}")
+    synth = None
+    if not args.sync:
+        got = call_claude_batch({"synth": (SYNTH_MODEL, SYS_SYNTH, synth_user)}, deadline, "彙總").get("synth")
+        if got:
+            synth = {"ok": True, "via": "batch", **got}
+    if synth is None:
+        synth = {"via": "sync", **call_claude_retry(SYNTH_MODEL, SYS_SYNTH, synth_user, f"彙總×{SYNTH_MODEL}")}
     if not synth["ok"]:
         print("彙總失敗，本場失敗", flush=True)
         sys.exit(1)
 
-    write_output(args.slot, trading_day, six, {"text": synth["text"], "usage": synth["usage"]})
+    write_output(args.slot, trading_day, six,
+                 {"text": synth["text"], "usage": synth["usage"], "via": synth.get("via")})
 
 
 if __name__ == "__main__":
