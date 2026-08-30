@@ -1464,9 +1464,15 @@ function renderMktbal(){
 // RRGD-PURE-BEGIN（此區塊只含純函式，Node 對拍腳本整段抽出執行；勿加 DOM 依賴）
 const RRGD_N = 12, RRGD_K = 10, RRGD_PERSIST = 3, RRGD_TAIL = 10, RRGD_ANCHORS = 10;
 // 候補清單排序鍵（coords 的欄位索引）：0＝RS-Ratio（相對強度的水準）、1＝RS-Momentum（水準的變化率）。
-// 「相對強度領先」列的是領先象限的相對強度高低，語意上要的是水準值；且 taiwan-flow-live-v2
-// backtest/report_chain_overlap.md §2.4／§5.3 記載 RS-Momentum 水準排序六種切法 6/6 為負，
+// 「相對強度領先」列的是領先象限的相對強度高低，語意上要的是水準值——這是改排序鍵的主要依據；
+// taiwan-flow-live-v2 backtest/report_chain_overlap.md §2.5（§5.3 複述）記載 RS-Momentum 水準
+// 排序六種切法 6/6 為負（平均 -0.238%）、RS-Ratio 水準 6/6 為正（平均 +0.156%），為方向旁證。
 // 故該清單改以 RS-Ratio 遞減排序；「資金剛輪入（改善象限）」仍用 RS-Momentum（要的就是變化率）。
+// ⚠ 別把上面那組數字讀得比報告本身強：§2.5 表下方寫「分塊 CI 不跨 0 的格子數：0 / 12」，
+// §5.3 引註寫「這仍然只是線索：RS-Momentum 的負向 CI 全部跨 0，本檔沒有證明『反著做會賺』」。
+// ⚠ 類比落差：§2.5 量的是「全 47 條鏈做橫斷面排序、取前後 20%」的 T+3 多空價差，而本清單是
+// 「先過 N=3 持續性、只留領先象限的鏈，再排序」——兩者不是同一個構造，該節的 +0.156%
+// 不能直接推到象限內排序。此處只是排序呈現順序，不構成任何買賣訊號。
 const RRGD_SORT_RATIO = 0, RRGD_SORT_MOM = 1;
 // 候補清單點擊加入畫布：上限 5 條（47 條全畫曾實測 1,477 個軌跡交點、不可讀），存 localStorage
 const RRGD_PICKS_KEY = "pm_rrgd_picks", RRGD_PICKS_MAX = 5;
@@ -1526,8 +1532,11 @@ function rrgdQuad(r, m){
   if (r >= 100) return m >= 100 ? "領先" : "轉弱";
   return m >= 100 ? "改善" : "落後";
 }
-// 持續性 N：連續 n 日（含當日）都在象限 q 才進榜；排序＝RS-Momentum 遞減、同值按名稱
-// （比照 run_rrg_daily_axes.py 的 improving_top 排序語意）
+// 持續性 N：連續 n 日（含當日）都在象限 q 才進榜；排序鍵由 sortKey 參數決定（coords 的欄位
+// 索引，遞減、同值按名稱；預設 RRGD_SORT_MOM）。呼叫端有二：「資金剛輪入（改善象限）」傳
+// RRGD_SORT_MOM——此路徑比照 run_rrg_daily_axes.py 的 improving_top 排序語意；
+// 「相對強度領先（領先象限）」傳 RRGD_SORT_RATIO，該處無對應的 Python 正本
+// （理由與其限制見 RRGD_SORT_* 上方註解）。
 function rrgdPersistList(coords, t, q, n, sortKey = RRGD_SORT_MOM){
   const out = [];
   for (const name of Object.keys(coords)){
