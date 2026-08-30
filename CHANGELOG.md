@@ -3,6 +3,40 @@
 帶日期的變更紀錄從 README「快速接手」搬出集中於此（2026-07-24 起）；
 更早的逐日歷史見 git log。常青的架構／口徑／教訓說明仍在 README。
 
+## 2026-08-30 「本次 API 費用估算」補到摘要分析其餘場次（三站）
+
+2026-08-27 首次上線的費用估算只掛在**單發**摘要分析（postmkt `691226a`／
+taiwan-flow-live-v2 `737d9b2`／taiwan-stock-news `04c4d78`，當時明記「其餘場次未加」）。
+本次補齊，**全部重用既有的三站同步函式 `insightCostText`，未產生任何變體**：
+
+| 場次 | 位置 | 本次 |
+|------|------|------|
+| 單發摘要分析 | 三站 `insightHtml`／`renderInsight` | 08-27 已有 |
+| 雲端歷史（單發存檔） | 三站 `cloudHistSectionHtml` | **補上**（`entry.model`＋`entry.usage` 皆在） |
+| 彙總場 3 份原始分析 | postmkt `sumResultHtml` 的 `six[]` | **補上**（`s.model` 在 JSON 內） |
+| 彙總場的彙總本身 | postmkt `sumResultHtml` 的 `synthesis` | **手動場補上**；自動場見下 |
+| 持股診斷 AI 解讀 | postmkt `diagCardHtml` | **補上**（`ai.model`＋`ai.usage` 皆在） |
+
+**未補的一項，照實記錄**：`data/summary/*.json`（GitHub Actions 自動彙總場）的
+`synthesis` 只有 `{text, usage, via}`、**沒有 model 欄**。彙總模型雖在程式碼裡固定是
+Opus 4.8，但那是「從程式碼推論」而非資料本身，硬套等於顯示一個猜的數字，故
+`sumResultHtml` 在 `synthesis.model` 缺席時讓 `insightCostText` 回空字串、**寧可不顯示**。
+要補齊需 `build_summary.py` 的 `write_output` 一併寫入彙總模型（本次未動 Python）。
+手動彙總場已改成落地時寫入 `synthesis.model`（新增常數 `SUM_SYNTH_MODEL`，同時是
+`runSummary` 呼叫點的事實來源，取代原本寫死的字面量），故手動場即刻可見。
+
+**`insightCostText` 本體唯一的改動＝batch 半價**：自動彙總場走 Message Batches，其 `usage`
+帶 `service_tier:"batch"`，而 Batch API 是標準價的 50%（claude-api skill 定價表）。不處理的話
+自動場的每一份原始分析都會**高估一倍**。故加 `const disc = usage.service_tier === "batch" ? 0.5 : 1`
+一行；瀏覽器單發的 `service_tier` 是 `"standard"`，走 `disc=1`，**既有單發場數字逐位元不變**
+（實測 Sonnet 5／輸入 10,000／輸出 2,000＝`US$0.0400（≈ NT$1.3）`，改動前後相同）。
+三站該區塊改後 sha256 仍全等（`5139f23e…`），新增的雲端歷史片段
+`${insightCostText(u, cur.entry.model)}` 三站亦逐字相同。
+
+`INSIGHT_PRICES`／`USD_TWD` 本次未動（08-30 剛對齊）。經清點，各場次用到的 model id 只有
+`claude-sonnet-5`（`SUM_MODELS`、單發下拉）與 `claude-opus-4-8`（彙總、單發下拉），
+**都在價目表內**，無「表中沒有的 model」情形；表外 model 的現行行為（回空字串、靜默）未改。
+
 ## 2026-08-30 輪動雷達日頻 RRG 錨點標名碰撞避讓
 
 `rrgdSvg` 的錨點與加選鏈標名原本一律固定偏移（x+7、y−6），零碰撞偵測——點密集日會互相重疊，

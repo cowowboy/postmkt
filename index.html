@@ -2122,7 +2122,11 @@ function insightCostText(usage, model){
   const out = usage.output_tokens || 0;
   const cr  = usage.cache_read_input_tokens || 0;
   const cw  = usage.cache_creation_input_tokens || 0;
-  const usd = (inp*p[0] + cw*p[0]*1.25 + cr*p[0]*0.1 + out*p[1]) / 1e6;
+  // Message Batches 為半價（claude-api skill 定價表：batch 以 50% 成本非同步執行）。自動彙總場
+  // （build_summary.py 走 batch）的 usage 會帶 service_tier:"batch"，同一組單價須打 5 折，否則
+  // 高估一倍；瀏覽器單發是 "standard"，走 disc=1，既有場次數字不變。
+  const disc = usage.service_tier === "batch" ? 0.5 : 1;
+  const usd = (inp*p[0] + cw*p[0]*1.25 + cr*p[0]*0.1 + out*p[1]) * disc / 1e6;
   const twd = usd * USD_TWD;
   const su = usd < 0.1 ? usd.toFixed(4) : usd.toFixed(3);
   return "　估 ≈ US$" + su + "（≈ NT$" + twd.toFixed(1) + "）";
@@ -2249,6 +2253,9 @@ const SUM_V2_RAW = "https://raw.githubusercontent.com/shihpc/taiwan-flow-live-v2
 const SUM_NEWS_URL = "https://raw.githubusercontent.com/shihpc/taiwan-stock-news/main/news.json";
 // 每頁 1 次 Sonnet 5 分析（2026-08-29 由 2 份砍 1 份，A/B 重疊實證後使用者裁定）；彙總維持 Opus 4.8
 const SUM_MODELS = ["claude-sonnet-5"];
+// 彙總固定用 Opus 4.8（與 build_summary.py 的 SYNTH_MODEL 同值）。抽成常數是為了讓
+// runSummary 的呼叫點與 synthesis.model 的寫入用同一份事實來源，費用估算才不必猜模型。
+const SUM_SYNTH_MODEL = "claude-opus-4-8";
 // v2 live.stocks 陣列欄位後備（live.stock_cols 缺時用；與 v2 前端 SC 同步）
 const SUM_SC = ["chg","amt","close","vol","bv","sv","pts","dp","lim","lw","f10","c10","c30","r10","it","fi","y1","y2","ints","nl"];
 // 三站 SYS 原文。本站盤後 SYS 唯一事實來源＝下方 SUM_SYS_POSTMKT（runInsight 直接引用，
@@ -2541,8 +2548,8 @@ async function runSummary(){
     const pageDate = p => p==="盤後分析" ? dates.postmkt : p==="即時類股動態" ? dates.live : dates.news;
     const USER = `以下為同一批次產出的 ${six.length} 份獨立分析（各以【頁面×標籤】標頭分隔，附各份資料日）：\n\n`
       + six.map(s=>`【${s.page}×${s.tag||s.model}】（該份資料日：${pageDate(s.page)}）\n${s.text}`).join("\n\n────────\n\n");
-    const res = await callClaude(key, "claude-opus-4-8", SUM_SYS_SYNTH, USER, signal);
-    const result = { at: twNow(), six, synthesis:{ text:res.text, usage:res.usage }, dates };
+    const res = await callClaude(key, SUM_SYNTH_MODEL, SUM_SYS_SYNTH, USER, signal);
+    const result = { at: twNow(), six, synthesis:{ text:res.text, usage:res.usage, model:SUM_SYNTH_MODEL }, dates };
     state.summary = result; state.sumManualOpen = null;
     // localStorage 最多 2 筆（單筆可達 ~50-100KB；quota 滿時退而只存最新 1 筆）
     try{
@@ -2573,11 +2580,12 @@ function sumResultHtml(res, metaPrefix){
   const outSum = six.reduce((t,s)=>t+(s.usage?(s.usage.output_tokens||0):0),0);
   const sy = res.synthesis || {};
   const codeSet = stockCodeSet(); // 一次收集，彙總＋各份原文共用
-  let h = `<div class="insight-meta">${metaPrefix} · 彙總 ${sumTok(sy.usage)} token · ${six.length}份合計 輸入 ${num(inSum)}／輸出 ${num(outSum)} token</div>`;
+  // sy.model 缺席（自動場 JSON 未存彙總模型）時 insightCostText 回空字串，寧可不顯示也不猜模型
+  let h = `<div class="insight-meta">${metaPrefix} · 彙總 ${sumTok(sy.usage)} token${insightCostText(sy.usage, sy.model)} · ${six.length}份合計 輸入 ${num(inSum)}／輸出 ${num(outSum)} token</div>`;
   h += `<div class="insight-card insight-md">${linkifyStocks(mdToHtml(sy.text||""), codeSet)}</div>`;
   h += `<details style="margin:8px 0 14px"><summary style="cursor:pointer;color:var(--muted);font-size:.84rem;padding:4px 2px">▸ 展開 ${six.length} 份原始分析</summary>`;
   for (const s of six){
-    h += `<div class="insight-meta" style="margin-top:12px">${esc(s.page)} × ${esc(s.tag||s.model)}${s.ok?"":"（失敗）"}${s.date?` · 資料日 ${esc(s.date)}`:""} · ${sumTok(s.usage)} token</div>`;
+    h += `<div class="insight-meta" style="margin-top:12px">${esc(s.page)} × ${esc(s.tag||s.model)}${s.ok?"":"（失敗）"}${s.date?` · 資料日 ${esc(s.date)}`:""} · ${sumTok(s.usage)} token${insightCostText(s.usage, s.model)}</div>`;
     h += `<div class="insight-card insight-md">${linkifyStocks(mdToHtml(s.text||""), codeSet)}</div>`;
   }
   h += `</details>`;
@@ -2720,7 +2728,7 @@ function cloudHistSectionHtml(){
     } else {
       const u = cur.entry.usage;
       const tok = u ? `輸入 ${num(inTok(u))}／輸出 ${num(u.output_tokens||0)} token` : "token數不明";
-      h += `<div class="insight-meta">雲端 ${esc(cur.label)} · 生成時間 ${esc(cur.entry.at||"")}（台灣）· 資料日 ${esc(cur.entry.date||"—")} · 模型 ${esc(cur.entry.model||"—")} · ${tok}</div>`;
+      h += `<div class="insight-meta">雲端 ${esc(cur.label)} · 生成時間 ${esc(cur.entry.at||"")}（台灣）· 資料日 ${esc(cur.entry.date||"—")} · 模型 ${esc(cur.entry.model||"—")} · ${tok}${insightCostText(u, cur.entry.model)}</div>`;
       h += `<div class="insight-card insight-md">${linkifyStocks(mdToHtml(cur.entry.text||""), stockCodeSet())}</div>`;
     }
   }
@@ -3268,7 +3276,7 @@ function diagCardHtml(hd){
     if (mine && ai.err) h += `<div class="dwarn" style="font-size:.8rem;margin-top:6px">${esc(ai.err)}</div>`;
     if (mine && ai.text){
       const u = ai.usage;
-      h += `<div class="insight-meta" style="margin-top:8px">AI 解讀 · ${esc(ai.at||"")}（台灣）· 模型 ${esc(ai.model||"")}${u?` · 輸入 ${num(inTok(u))}／輸出 ${num(u.output_tokens||0)} token`:""}</div>`;
+      h += `<div class="insight-meta" style="margin-top:8px">AI 解讀 · ${esc(ai.at||"")}（台灣）· 模型 ${esc(ai.model||"")}${u?` · 輸入 ${num(inTok(u))}／輸出 ${num(u.output_tokens||0)} token${insightCostText(u, ai.model)}`:""}</div>`;
       h += `<div class="insight-card insight-md">${linkifyStocks(mdToHtml(ai.text), stockCodeSet())}</div>`;
       h += `<div class="mut" style="font-size:.74rem;margin-top:4px">AI 解讀為證據彙整，非投資建議；「已驗證」僅代表歷史統計傾向，不保證未來表現。</div>`;
     }
