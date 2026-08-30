@@ -79,7 +79,11 @@
   鏈等權報酬指數 ÷ 大盤等權報酬指數（RS）再做 12 日窗 z-score（100＋標準差倍數）；
   Y 軸 RS-Momentum＝RS-Ratio 的 10 日 ROC 再做同法 z-score。象限 100/100 分界、不做中位置中，
   右上起順時針＝領先／轉弱／落後／改善。候補清單（改善＝「資金剛輪入」、領先＝「動能領先」）
-  套持續性 N=3（連續 3 日在該象限才列入），完整列出不設上限，排序 RS-Momentum 遞減。
+  套持續性 N=3（連續 3 日在該象限才列入），完整列出不設上限；**排序鍵兩份清單不同**：
+  改善＝RS-Momentum 遞減（要的就是變化率），領先＝**RS-Ratio 遞減**（2026-08-30 由 RS-Momentum 改，
+  該清單語意上要的是相對強度的水準；依據 taiwan-flow-live-v2 `backtest/report_chain_overlap.md`
+  §2.4／§5.3：RS-Momentum 水準排序六種切法 6/6 為負、RS-Ratio 水準 6/6 為正，惟 CI 全跨 0，
+  屬方向線索而非顯著證據）。
 - **公式正本**：taiwan-flow-live-v2 `backtest/run_rrg_daily_axes.py` 的 `axis_systems`
   （`price_coords` 分支）。前端 `index.html` 的 `RRGD-PURE` 註解區塊逐式重現（含 `cum_index`
   開頭缺值當 0／中間缺值截斷、樣本標準差 ddof=1、SD=0 回 null 等細節），改公式必須兩邊同步

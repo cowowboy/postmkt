@@ -1463,6 +1463,11 @@ function renderMktbal(){
 // 資料不支持任何買賣建議，本 tab 全程描述語氣。
 // RRGD-PURE-BEGIN（此區塊只含純函式，Node 對拍腳本整段抽出執行；勿加 DOM 依賴）
 const RRGD_N = 12, RRGD_K = 10, RRGD_PERSIST = 3, RRGD_TAIL = 10, RRGD_ANCHORS = 10;
+// 候補清單排序鍵（coords 的欄位索引）：0＝RS-Ratio（相對強度的水準）、1＝RS-Momentum（水準的變化率）。
+// 「動能領先」列的是領先象限的相對強度高低，語意上要的是水準值；且 taiwan-flow-live-v2
+// backtest/report_chain_overlap.md §2.4／§5.3 記載 RS-Momentum 水準排序六種切法 6/6 為負，
+// 故該清單改以 RS-Ratio 遞減排序；「資金剛輪入（改善象限）」仍用 RS-Momentum（要的就是變化率）。
+const RRGD_SORT_RATIO = 0, RRGD_SORT_MOM = 1;
 // 候補清單點擊加入畫布：上限 5 條（47 條全畫曾實測 1,477 個軌跡交點、不可讀），存 localStorage
 const RRGD_PICKS_KEY = "pm_rrgd_picks", RRGD_PICKS_MAX = 5;
 // 日報酬逐日連乘成指數。第一格＝base；開頭連續缺值當 0（指數停在 base），
@@ -1523,7 +1528,7 @@ function rrgdQuad(r, m){
 }
 // 持續性 N：連續 n 日（含當日）都在象限 q 才進榜；排序＝RS-Momentum 遞減、同值按名稱
 // （比照 run_rrg_daily_axes.py 的 improving_top 排序語意）
-function rrgdPersistList(coords, t, q, n){
+function rrgdPersistList(coords, t, q, n, sortKey = RRGD_SORT_MOM){
   const out = [];
   for (const name of Object.keys(coords)){
     const arr = coords[name];
@@ -1534,7 +1539,7 @@ function rrgdPersistList(coords, t, q, n){
     }
     if (ok) out.push(name);
   }
-  out.sort((a, b) => (coords[b][t][1] - coords[a][t][1]) || (a < b ? -1 : a > b ? 1 : 0));
+  out.sort((a, b) => (coords[b][t][sortKey] - coords[a][t][sortKey]) || (a < b ? -1 : a > b ? 1 : 0));
   return out;
 }
 // 資料落後幾個「平日」（只排除週六日，國定假日不扣，同 dayDiff 的已知近似）
@@ -1729,9 +1734,9 @@ function renderRrgd(){
     + `軌跡尾巴（近 ${RRGD_TAIL} 個交易日）只畫當日成交額 Top ${RRGD_ANCHORS} 錨點並標名，`
     + `其餘淡化顯示、滑鼠移上可見名稱與座標。象限自右上順時針＝領先／轉弱／落後／改善（100/100 分界，不做中位置中）。`
     + `下方候補清單<b style="color:var(--txt)">點列可把該鏈軌跡加入畫布</b>（虛線顯示、再點一次移除，最多 ${RRGD_PICKS_MAX} 條）。</div>`;
-  const listNote = `連續 ${RRGD_PERSIST} 日停留在該象限才列入（壓住日頻清單洗牌），完整列出不設上限；排序＝RS-Momentum 遞減`;
-  const imp = rrgdPersistList(RRGD.coords, t, "改善", RRGD_PERSIST);
-  const lead = rrgdPersistList(RRGD.coords, t, "領先", RRGD_PERSIST);
+  const listNote = sortBy => `連續 ${RRGD_PERSIST} 日停留在該象限才列入（壓住日頻清單洗牌），完整列出不設上限；排序＝${sortBy} 遞減`;
+  const imp = rrgdPersistList(RRGD.coords, t, "改善", RRGD_PERSIST, RRGD_SORT_MOM);
+  const lead = rrgdPersistList(RRGD.coords, t, "領先", RRGD_PERSIST, RRGD_SORT_RATIO);
   const foot = `<div class="mcard" style="font-size:.76rem;color:var(--muted);line-height:1.7;margin-top:14px">`
     + `<b style="color:var(--txt)">閱讀提醒（依據本專案回測）</b><br>`
     + `· 前瞻超額報酬六種切法 0/12 顯著——資料不支持任何買賣建議，本圖僅描述各鏈相對大盤的歷史位置與變化。`
@@ -1752,9 +1757,9 @@ function renderRrgd(){
   main.innerHTML = stale + controls + intro
     + `<div class="mcard" style="overflow-x:auto">${rrgdSvg(j, t)}</div>`
     + pickBar
-    + sec("資金剛輪入（改善象限）", listNote)
+    + sec("資金剛輪入（改善象限）", listNote("RS-Momentum"))
     + rrgdListTable(imp, j, t)
-    + sec("動能領先（領先象限）", listNote)
+    + sec("動能領先（領先象限）", listNote("RS-Ratio"))
     + rrgdListTable(lead, j, t)
     + foot;
 }

@@ -3,6 +3,21 @@
 帶日期的變更紀錄從 README「快速接手」搬出集中於此（2026-07-24 起）；
 更早的逐日歷史見 git log。常青的架構／口徑／教訓說明仍在 README。
 
+## 2026-08-30 輪動雷達「動能領先」排序改用 RS-Ratio
+
+「動能領先（領先象限）」候補清單原依 RS-Momentum 遞減排序，改為依 RS-Ratio 遞減。
+理由有二：(1) 語意——該清單要表達的是相對強度的**水準**，RS-Momentum 是水準的變化率；
+(2) 回測線索——taiwan-flow-live-v2 `backtest/report_chain_overlap.md` §2.4／§5.3 記載，
+同一套橫斷面排序下 RS-Momentum 水準六種切法 6/6 為負（平均 -0.238%）、RS-Ratio 水準 6/6 為正
+（平均 +0.156%），純動能（過去 L 日超額報酬）18/18 點估計為正、4/18 分塊 CI 顯著。
+**該報告自陳 CI 全跨 0、只是方向線索不是可上線結論**，故本次只調整排序鍵，不改軸定義、
+不改象限判定、不加任何買賣建議語氣。
+
+實作：`rrgdPersistList` 新增 `sortKey` 參數（`RRGD_SORT_RATIO`／`RRGD_SORT_MOM`），
+「資金剛輪入（改善象限）」維持 RS-Momentum；清單說明列的排序文字改為逐清單標示。
+postmkt 無 RRG 後端實作（座標公式正本在 taiwan-flow-live-v2 `backtest/run_rrg_daily_axes.py`，
+該處無此清單排序），故本次為單邊改動。UI 標籤「動能領先」暫未更名。
+
 ## 2026-08-12 新增第 13 個 tab「選股」（分析師預估 EPS 篩選）
 
 動機＝富邦投顧「明年 EPS>50 找萬元股」報告的自動化重現。新管線 `src/build_screen.py` →
