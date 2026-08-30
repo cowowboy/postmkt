@@ -3,6 +3,34 @@
 帶日期的變更紀錄從 README「快速接手」搬出集中於此（2026-07-24 起）；
 更早的逐日歷史見 git log。常青的架構／口徑／教訓說明仍在 README。
 
+## 2026-08-30 自動彙總場補寫 `synthesis.model`（費用估算最後一塊缺口）
+
+上一則記錄的「未補的一項」——`data/summary/*.json` 的 `synthesis` 只有 `{text, usage, via}`、
+缺 `model`，導致前端 `sumResultHtml` 在自動場刻意不顯示彙總本身的費用估算——本次補齊。
+**只動 `build_summary.py`，`index.html` 零改動**（前端本來就讀 `sy.model`，缺席才回空字串）。
+
+**做法是把「這次實際呼叫用的 model」沿著兩條路徑帶回來，而不是在落地時寫 `SYNTH_MODEL`
+字面量**——彙總有 batch 主路徑與同步回退兩條路，硬套常數等於再一次「從程式碼推論」：
+
+| 位置 | 改動 |
+|------|------|
+| `call_claude_retry` | 成功與 `ok:false` 佔位一律回傳 `model`＝這次送出的模型 |
+| `call_claude_batch` | 每筆成功結果附 `model`＝`reqs[cid]` 該筆送出時用的模型（逐筆各自記） |
+| `main()` 彙總段 | `write_output` 的 payload 加 `"model": synth.get("model")`，取自 synth 本身 |
+
+`six[]` 原本就有 `model`（前端 `s.model` 早已可用），本次兩路回傳的 `model` 展開後為
+**同值覆蓋**（`reqs[f"s{i}"]` 與 `jobs[i]` 是同一個 `model` 變數），既有欄位值不變。
+`synthesis` 也只新增 `model`，`text`／`usage`／`via` 原樣。
+
+寫進去的字串是**送出請求時用的模型別名**（`claude-opus-4-8`／`claude-sonnet-5`），
+不是 API 回應裡可能被解析成帶日期版本的 `message.model`——因為前端 `INSIGHT_PRICES`
+以別名為鍵，寫回帶日期的 id 會讓 `insightCostText` 靜靜回空字串。新增測試
+`tests/test_summary_model_field.py` 有一條就在守這件事（比對 `SYNTH_MODEL`／
+`SUMMARY_MODELS` 是否都在 `index.html` 的 `INSIGHT_PRICES` 鍵集合內）。
+
+未觸及 `gather_*`（index.html gather 的 Python 移植副本）與 `SYS_*`（唯一事實來源＝
+index.html），三站同步約定不受影響。
+
 ## 2026-08-30 「本次 API 費用估算」補到摘要分析其餘場次（三站）
 
 2026-08-27 首次上線的費用估算只掛在**單發**摘要分析（postmkt `691226a`／

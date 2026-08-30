@@ -751,19 +751,22 @@ def call_claude(model: str, system: str, user_msg: str) -> dict:
 
 
 def call_claude_retry(model: str, system: str, user_msg: str, label: str) -> dict:
-    """單份失敗 retry 1 次，仍失敗回 ok:false 佔位（不中止全場）。"""
+    """單份失敗 retry 1 次，仍失敗回 ok:false 佔位（不中止全場）。
+    回傳一律帶 model＝這次實際送出的模型，讓呼叫端不必從常數回推（batch 超時回退到
+    同步時，寫進產出的才會是真正被用到的那一個）。"""
     last = None
     for attempt in (1, 2):
         try:
             res = call_claude(model, system, user_msg)
             print(f"  ✓ {label}（第{attempt}次）", flush=True)
-            return {"ok": True, **res}
+            return {"ok": True, "model": model, **res}
         except Exception as e:
             last = e
             print(f"  ✗ {label} 第{attempt}次失敗：{e}", flush=True)
             if attempt == 1:
                 time.sleep(5)
-    return {"ok": False, "text": f"（該份產出失敗：{last}）", "stop_reason": None, "usage": None}
+    return {"ok": False, "model": model, "text": f"（該份產出失敗：{last}）",
+            "stop_reason": None, "usage": None}
 
 
 # ---------- Message Batches（2026-08-29：自動場改走半價非同步批次） ----------
@@ -792,7 +795,7 @@ def batch_deadline(slot: str, t_start: float) -> int:
 
 def call_claude_batch(reqs: dict, deadline_sec: int, label: str) -> dict:
     """提交一包請求並輪詢至 ended 或期限。reqs = {custom_id: (model, system, user_msg)}。
-    回 {custom_id: {text,stop_reason,usage} 或 None}；None＝該筆需同步回退。
+    回 {custom_id: {model,text,stop_reason,usage} 或 None}；None＝該筆需同步回退。
     整包提交失敗／超時 cancel／結果下載失敗 → 全部 None（整包回退），絕不讓場失敗。"""
     none_all = {cid: None for cid in reqs}
     try:
@@ -839,7 +842,9 @@ def call_claude_batch(reqs: dict, deadline_sec: int, label: str) -> dict:
                 continue
             if res.get("type") == "succeeded":
                 try:
-                    out[cid] = parse_message(res.get("message") or {})
+                    # model 取這筆請求送出時用的模型（reqs[cid] 的第一元素），與同步回退
+                    # 路徑同一語意，呼叫端拿到哪一路的結果都能直接記錄實際模型
+                    out[cid] = {"model": reqs[cid][0], **parse_message(res.get("message") or {})}
                 except Exception as e:
                     print(f"  batch[{label}] {cid} 內容異常（{e}）→ 該筆同步回退", flush=True)
             else:
@@ -1173,6 +1178,8 @@ def main() -> None:
           flush=True)
     bres = {} if args.sync or not reqs or not deadline else call_claude_batch(reqs, deadline, "摘要")
 
+    # six[] 本來就存 model（前端 s.model 用來估費用）；batch/同步兩路的回傳現在也帶 model，
+    # 展開後為同值覆蓋（reqs[f"s{i}"] 與 jobs[i] 同一個 model 變數），既有欄位值不變。
     six = []
     for i, (p, model, tag) in enumerate(jobs):
         label = f"{p['page']}×{tag}"
@@ -1213,8 +1220,11 @@ def main() -> None:
         print("彙總失敗，本場失敗", flush=True)
         sys.exit(1)
 
+    # model 取自 synth 本身（batch 成功走 call_claude_batch、超時／失敗走 call_claude_retry，
+    # 兩路都會回報自己實際用的模型），不寫 SYNTH_MODEL 字面量——前端才不必從程式碼推論
     write_output(args.slot, trading_day, six,
-                 {"text": synth["text"], "usage": synth["usage"], "via": synth.get("via")})
+                 {"text": synth["text"], "usage": synth["usage"], "via": synth.get("via"),
+                  "model": synth.get("model")})
 
 
 if __name__ == "__main__":
