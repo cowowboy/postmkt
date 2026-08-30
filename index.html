@@ -1668,6 +1668,57 @@ function rrgdSvg(j, t){
      + `<text x="${ML - 4}" y="${cy + 3}" text-anchor="end" font-size="10" fill="var(--muted)">100</text>`
      + `<text x="${ML - 4}" y="${H - MB}" text-anchor="end" font-size="10" fill="var(--muted)">${f1(y0)}</text>`;
   const title = (nm, c) => `<title>${esc(nm)}｜${rrgdQuad(c[0], c[1])}｜RS-Ratio ${c[0].toFixed(2)}／RS-Momentum ${c[1].toFixed(2)}</title>`;
+  // 標名碰撞避讓（只動視覺層，座標公式仍在 RRGD-PURE 區塊內、未受影響）。
+  // 演算法移植自 taiwan-flow-live-v2/index.html 的 ovRrgHtml 標籤段：一圈 8 個候選位、
+  // 撞光再跑外三圈、仍全撞則挑「加權重疊面積最小」處疊放。移植時重新對應的語意差異：
+  // ①本頁頭點是固定半徑（下方 circle 的 r=5），盤中版是可變泡泡半徑 ②權重改用當日成交額
+  // （盤中版用成交佔比）③強制標名族群＝加選鏈＋錨點（盤中版是錨點／改善象限／位移異常）。
+  // 差異夠大，兩邊刻意不登記為「改一邊要同步另一邊」的跨站同步函式，只互相引用。
+  // 錨點與加選鏈都是使用者主動要看的，故一律標名、不因擁擠而靜默消失；全出界才夾回畫布內。
+  const RRGD_LR = 5;                                    // 頭點半徑，須與下方 circle 的 r 一致
+  const amtOf = nm => ((j.chains[nm].amt || [])[t]) || 0;
+  const maxAmt = Math.max(1, ...RRGD.names.map(amtOf));
+  // 佔位優先序：加選鏈（使用者主動點的，優先保障）→ 錨點依成交額由大到小
+  const lblOrder = picks.concat(Object.keys(tails).sort((a, b) => (amtOf(b) - amtOf(a)) || (a < b ? -1 : 1)));
+  const lblBoxes = [];                                  // 已佔位的框（帶 wt 權重）
+  const ovlp = (a, b) => Math.max(0, Math.min(a.x2, b.x2) - Math.max(a.x1, b.x1))
+                       * Math.max(0, Math.min(a.y2, b.y2) - Math.max(a.y1, b.y1));   // 重疊面積，非布林
+  const cl = (v, lo, hi) => Math.max(lo, Math.min(hi, v));
+  const lbls = lblOrder.map(nm => {
+    const c = coords[nm][t], px = sx(c[0]), py = sy(c[1]);
+    // font-size 11 的字寬估計：全形（碼位 >255）約 11px、半形約 6.2px，另留 4px 邊界
+    const wpx = [...nm].reduce((a, ch) => a + (ch.charCodeAt(0) > 255 ? 11 : 6.2), 0) + 4;
+    const wt = 1 + amtOf(nm) / maxAmt * 100;   // 權重＝成交額（正規化 0~100，讓底數 1 仍有意義）
+    // 一圈 8 個候選位 [dx, dy, text-anchor]；g＝標籤離頭點邊緣的間距。
+    // 第一個候選位在 g=3 時恰為 (x+7, y−6)＝改動前的固定偏移，故不擁擠時外觀與舊版一致。
+    const ring = g => {
+      const d = RRGD_LR + g;
+      return [[d - 1, -d + 2, "start"], [0, -d - 1, "middle"], [d, 4, "start"], [-d + 1, -d + 2, "end"],
+              [d - 1, d + 7, "start"], [-d, 4, "end"], [0, d + 10, "middle"], [-d + 1, d + 7, "end"]];
+    };
+    const cands = [...ring(3), ...ring(12), ...ring(22), ...ring(32)];
+    let put = null, best = null;
+    for (const [dx, dy, anc] of cands){
+      const lx = px + dx, ly = py + dy;
+      const x1 = anc === "middle" ? lx - wpx / 2 : anc === "end" ? lx - wpx : lx;
+      const box = { x1, x2: x1 + wpx, y1: ly - 10.5, y2: ly + 3 };
+      if (box.x1 < ML || box.x2 > W - MR || box.y1 < MT || box.y2 > H - MB) continue;   // 出界不採用
+      const cost = lblBoxes.reduce((acc, b) => acc + ovlp(box, b) * b.wt, 0);
+      if (cost === 0){ put = { box, lx, ly, anc }; break; }
+      if (!best || cost < best.cost) best = { box, lx, ly, anc, cost };   // 全撞時的備胎：加權重疊最小者
+    }
+    if (!put) put = best;
+    if (!put){
+      // 32 個候選位全部出界（頭點貼邊＋標籤過寬）→ 夾回畫布內，仍不省略標籤
+      const ly = cl(py - 6, MT + 10.5, H - MB - 3), x1 = cl(px + 7, ML, Math.max(ML, W - MR - wpx));
+      put = { box: { x1, x2: x1 + wpx, y1: ly - 10.5, y2: ly + 3 }, lx: x1, ly, anc: "start" };
+    }
+    put.box.wt = wt;
+    lblBoxes.push(put.box);
+    return `<text x="${put.lx.toFixed(1)}" y="${put.ly.toFixed(1)}"`
+      + (put.anc === "start" ? "" : ` text-anchor="${put.anc}"`)
+      + ` font-size="11" fill="var(--txt)"${pickSet.has(nm) ? ` opacity="0.85"` : ""} pointer-events="none">${esc(nm)}</text>`;
+  }).join("");
   // 非錨點且非加選：淡化小點，hover（<title>）可見名稱與座標
   for (const nm of RRGD.names){
     const c = coords[nm][t];
@@ -1680,8 +1731,7 @@ function rrgdSvg(j, t){
     if (pts.length > 1)
       s += `<polyline points="${pts.map(p => sx(p[0]).toFixed(1) + "," + sy(p[1]).toFixed(1)).join(" ")}" fill="none" stroke="${col}" stroke-width="1.5" stroke-dasharray="5 3" opacity="0.7"/>`
          + `<circle cx="${sx(pts[0][0]).toFixed(1)}" cy="${sy(pts[0][1]).toFixed(1)}" r="2" fill="${col}" opacity="0.55"/>`;
-    s += `<circle cx="${sx(c[0]).toFixed(1)}" cy="${sy(c[1]).toFixed(1)}" r="5" fill="${col}" opacity="0.9" stroke="var(--txt)" stroke-width="1.1" stroke-dasharray="2.5 1.8">${title(nm, c)}</circle>`
-       + `<text x="${(sx(c[0]) + 7).toFixed(1)}" y="${(sy(c[1]) - 6).toFixed(1)}" font-size="11" fill="var(--txt)" opacity="0.85">${esc(nm)}</text>`;
+    s += `<circle cx="${sx(c[0]).toFixed(1)}" cy="${sy(c[1]).toFixed(1)}" r="5" fill="${col}" opacity="0.9" stroke="var(--txt)" stroke-width="1.1" stroke-dasharray="2.5 1.8">${title(nm, c)}</circle>`;
   }
   // 錨點：尾巴折線＋頭點＋標名
   for (const nm of Object.keys(tails)){
@@ -1689,10 +1739,9 @@ function rrgdSvg(j, t){
     if (pts.length > 1)
       s += `<polyline points="${pts.map(p => sx(p[0]).toFixed(1) + "," + sy(p[1]).toFixed(1)).join(" ")}" fill="none" stroke="${col}" stroke-width="1.5" opacity="0.45"/>`
          + `<circle cx="${sx(pts[0][0]).toFixed(1)}" cy="${sy(pts[0][1]).toFixed(1)}" r="2" fill="${col}" opacity="0.45"/>`;
-    s += `<circle cx="${sx(c[0]).toFixed(1)}" cy="${sy(c[1]).toFixed(1)}" r="5" fill="${col}" opacity="0.95">${title(nm, c)}</circle>`
-       + `<text x="${(sx(c[0]) + 7).toFixed(1)}" y="${(sy(c[1]) - 6).toFixed(1)}" font-size="11" fill="var(--txt)">${esc(nm)}</text>`;
+    s += `<circle cx="${sx(c[0]).toFixed(1)}" cy="${sy(c[1]).toFixed(1)}" r="5" fill="${col}" opacity="0.95">${title(nm, c)}</circle>`;
   }
-  return s + `</svg>`;
+  return s + lbls + `</svg>`;
 }
 function rrgdListTable(names, j, t){
   if (!names.length)
