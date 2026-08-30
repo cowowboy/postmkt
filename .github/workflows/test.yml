@@ -18,6 +18,7 @@ on:
 
 permissions:
   contents: read
+  issues: write
 
 concurrency:
   group: tests-${{ github.ref }}
@@ -39,3 +40,12 @@ jobs:
 
       - name: Run tests
         run: python -m pytest tests/ -q
+      # ⚠ 本檔 concurrency 為 cancel-in-progress: true：同一 ref 連續 push 時，
+      # 前一輪 run 會被 GitHub 取消（正常行為），會觸發本告警。
+      - name: Notify failure
+        # cancelled 也要告警：跑一半被取消（GitHub 端異常或誤按）同樣代表該場沒產出，
+        # 而 failure() 在 cancelled 時不成立（2026-07-24 postmkt pm 場靜默消失的教訓）
+        if: failure() || cancelled()
+        uses: ./.github/actions/notify-failure
+        with:
+          pipeline: postmkt-test
