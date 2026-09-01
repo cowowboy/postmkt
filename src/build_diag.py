@@ -45,7 +45,9 @@ except Exception:
 from fmclient import api_get, taipei_today, token  # noqa: E402 — 同目錄共用模組
 
 ROOT = Path(__file__).resolve().parent.parent  # repo 根（本檔在 src/ 下）
-V2_RAW = "https://raw.githubusercontent.com/shihpc/taiwan-flow-live-v2/main/data"
+from sites import raw  # noqa: E402 — 單一換址點,見 src/sites.py
+
+V2_RAW = raw("taiwan-flow-live-v2", "data")
 
 OUT_PATH = ROOT / "data" / "diag" / "diag.json"
 CACHE_PATH = ROOT / "data" / "diag" / "cache.json"

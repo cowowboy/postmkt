@@ -43,15 +43,18 @@ OUT_DIR = ROOT / "data" / "summary"
 HEADERS = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"}
 
 # ---------- 資料源 ----------
-URL_POSTMKT = "https://raw.githubusercontent.com/shihpc/postmkt/main/data/postmkt.json"
-URL_AETF_LATEST = "https://raw.githubusercontent.com/shihpc/taiwan-flow-live-v2/main/data/aetf/latest.json"
-URL_AETF_DIFF = "https://raw.githubusercontent.com/shihpc/taiwan-flow-live-v2/main/data/aetf/diff.json"
-URL_TF = "https://raw.githubusercontent.com/shihpc/taiwan-flows/main/data/latest.json"
-URL_LIVE = "https://taiwan-flow-v2.shihpc.workers.dev/live"
-URL_CLASSIFY = "https://raw.githubusercontent.com/shihpc/taiwan-flow-live-v2/main/data/classify.json"
-URL_NEWS = "https://raw.githubusercontent.com/shihpc/taiwan-stock-news/main/news.json"
-URL_MORNING = "https://raw.githubusercontent.com/shihpc/taiwan-flow-live-v2/main/data/morning.json"
-URL_US = "https://raw.githubusercontent.com/shihpc/taiwan-flow-live-v2/main/data/us.json"
+sys.path.insert(0, str(Path(__file__).resolve().parent / "src"))
+from sites import WORKER, raw  # noqa: E402 — 單一換址點,見 src/sites.py
+
+URL_POSTMKT = raw("postmkt", "data/postmkt.json")
+URL_AETF_LATEST = raw("taiwan-flow-live-v2", "data/aetf/latest.json")
+URL_AETF_DIFF = raw("taiwan-flow-live-v2", "data/aetf/diff.json")
+URL_TF = raw("taiwan-flows", "data/latest.json")
+URL_LIVE = f"{WORKER}/live"
+URL_CLASSIFY = raw("taiwan-flow-live-v2", "data/classify.json")
+URL_NEWS = raw("taiwan-stock-news", "news.json")
+URL_MORNING = raw("taiwan-flow-live-v2", "data/morning.json")
+URL_US = raw("taiwan-flow-live-v2", "data/us.json")
 URL_FINMIND_TDR = "https://api.finmindtrade.com/api/v4/taiwan_stock_trading_daily_report"
 URL_ANTHROPIC = "https://api.anthropic.com/v1/messages"
 

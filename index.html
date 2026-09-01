@@ -7,6 +7,7 @@
      即使某處漏 escape 被注入，connect-src 白名單也擋住把 localStorage 三把金鑰
      （anthropic_key/fm_token/gh_token）外送到白名單以外網域的路徑。
      新增資料源端點時需同步這份白名單，否則該 fetch 會被瀏覽器直接擋下。 -->
+<!-- 換址點：connect-src 要與 SITE.worker / SITE.rawOrg 同步（tests/test_sites_consistency.py 守門） -->
 <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; object-src 'none'; base-uri 'none'; connect-src 'self' https://api.anthropic.com https://api.finmindtrade.com https://raw.githubusercontent.com https://api.github.com https://taiwan-flow-v2.shihpc.workers.dev">
 <title>盤後分析 · 股市雷達</title>
 <style>
@@ -243,6 +244,7 @@
 </head>
 <body>
 <div class="wrap">
+  <!-- 換址點：與 SITE.hub 同步（tests/test_sites_consistency.py 守門） -->
   <div class="top"><a class="back" href="https://shihpc.github.io/">← 回 Hub</a></div>
   <header>
     <h1>📊 盤後分析</h1>
@@ -285,9 +287,22 @@ const SUBS = {
   screen:"選股：以分析師預估（FactSet 經鉅亨網／TradingView）篩選明年預估 EPS 達門檻之個股，並列今明年預估 EPS／本益比、目標價中位數與潛在漲幅、營收動能與評等分布。預估值為券商共識、隨時修訂，屬 AI 彙整之市場預期而非買賣建議與保證。",
   diag:"持股診斷：輸入持股後逐檔彙整籌碼／價量／題材／基本面／系統五面向事實與紅黃綠風險燈號，附近3日新聞命中與可選的 AI 解讀（按了才呼叫、token 自備）。證據彙整工具、非投資建議，不輸出買賣指令；持股資料僅存於本機瀏覽器（localStorage），不上傳任何伺服器。素材庫每交易日約 22:10 更新（全市場通用資料）。",
 };
-const V2_BASE = "https://raw.githubusercontent.com/shihpc/taiwan-flow-live-v2/main/data/aetf";
+// ── 單一換址點（前端）──────────────────────────────────────────────
+// 換帳號或換託管只改這個物件。但有兩處沒辦法插值、必須手動跟著改：
+//   1. 檔頭第 10 行的 CSP connect-src 白名單（meta 標籤）
+//   2. 「← 回 Hub」的靜態連結
+// 兩者都由 tests/test_sites_consistency.py 強制與 SITE 一致 —— CSP 沒跟著改時
+// 瀏覽器會「靜默」擋掉請求，頁面只是空白，是最難查的一種壞法。
+const SITE = {
+  rawOrg: "https://raw.githubusercontent.com/shihpc",
+  worker: "https://taiwan-flow-v2.shihpc.workers.dev",
+  hub:    "https://shihpc.github.io",
+};
+const RAW = (repo, path) => `${SITE.rawOrg}/${repo}/main/${path}`;
+
+const V2_BASE = RAW("taiwan-flow-live-v2", "data/aetf");
 // 盤後法人動態站（taiwan-flows）的資料：三大法人買賣超排行＋外資台指期未平倉，平日21:00更新
-const TF_BASE = "https://raw.githubusercontent.com/shihpc/taiwan-flows/main/data";
+const TF_BASE = RAW("taiwan-flows", "data");
 // 摘要分析要分析的固定分點（使用者指定）：9268凱基台北、9800元大、9600富邦、9A00永豐金
 const INSIGHT_BROKERS = ["9268","9800","9600","9A00"];
 const INSIGHT_MODELS = [["claude-opus-4-8","Opus 4.8（最佳判讀，約NT$3/次）"],["claude-sonnet-5","Sonnet 5（近Opus、約半價更快）"]];
@@ -1751,7 +1766,7 @@ function renderRrgd(){
     + `· 前瞻超額報酬六種切法 0/12 顯著——資料不支持任何買賣建議，本圖僅描述各鏈相對大盤的歷史位置與變化。`
     + `軸定義與回測依據見 taiwan-flow-live-v2/backtest/report_rrg_daily_axes.md。<br>`
     + `· 成員重疊：一塊錢平均被算進 2.24 條鏈；14 條鏈的成交額 100% 來自同時屬於其他鏈的成員，兩點靠近不代表獨立。<br>`
-    + `· <a class="slink" href="https://shihpc.github.io/taiwan-flow-live-v2/" target="_blank" rel="noopener">盤中版 →</a>`
+    + `· <a class="slink" href="${SITE.hub}/taiwan-flow-live-v2/" target="_blank" rel="noopener">盤中版 →</a>`
     + `（盤中逐 10 分鐘版在即時站的「即時一覽」；兩者軸定義不同：盤中為成交佔比相對自身基準，本頁為報酬相對大盤）</div>`;
   // 加選狀態列：目前加選（各名可點移除，涵蓋「已加選但不在下方清單」的鏈）＋超限提示＋全部移除
   const picks = rrgdPicksLoad();
@@ -2190,9 +2205,9 @@ document.addEventListener("keydown", e => {
 // 三頁 context：盤後分析＝直接複用本頁 insightGatherContext＋insightFetchBrokers；
 // 即時類股動態、新聞晨報＝移植自 v2/news 兩站的 insightGatherContext（資料改由 URL fetch），
 // 段落與欄位保持等價。gather 邏輯改動需與三站前端同步。
-const SUM_V2_LIVE = "https://taiwan-flow-v2.shihpc.workers.dev/live";
-const SUM_V2_RAW = "https://raw.githubusercontent.com/shihpc/taiwan-flow-live-v2/main/data";
-const SUM_NEWS_URL = "https://raw.githubusercontent.com/shihpc/taiwan-stock-news/main/news.json";
+const SUM_V2_LIVE = `${SITE.worker}/live`;
+const SUM_V2_RAW = RAW("taiwan-flow-live-v2", "data");
+const SUM_NEWS_URL = RAW("taiwan-stock-news", "news.json");
 // 每頁 1 次 Sonnet 5 分析（2026-08-29 由 2 份砍 1 份，A/B 重疊實證後使用者裁定）；彙總維持 Opus 4.8
 const SUM_MODELS = ["claude-sonnet-5"];
 // v2 live.stocks 陣列欄位後備（live.stock_cols 缺時用；與 v2 前端 SC 同步）
@@ -2627,7 +2642,7 @@ function summaryHtml(){
   return h;
 }
 // ---------- 雲端歷史（近3日；data/analyses/ 免 token 讀取） ----------
-const CLOUD_RAW = "https://raw.githubusercontent.com/shihpc/postmkt/main/data/analyses/";
+const CLOUD_RAW = RAW("postmkt", "data/analyses/");
 const CLOUD_KINDS = [["insight-postmkt","盤後摘要"],["insight-live","即時摘要"],["insight-news","新聞摘要"],["summary-manual","彙總手動"]];
 // 近 n 個台北日 YYYYMMDD（今日在前；日曆日非交易日，休市日檔案不存在→404 靜默略過）
 const twDayList = n => Array.from({length:n}, (_,i) =>
