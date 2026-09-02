@@ -8,7 +8,7 @@
      （anthropic_key/fm_token/gh_token）外送到白名單以外網域的路徑。
      新增資料源端點時需同步這份白名單，否則該 fetch 會被瀏覽器直接擋下。 -->
 <!-- 換址點：connect-src 要與 SITE.worker / SITE.rawOrg 同步（tests/test_sites_consistency.py 守門） -->
-<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; object-src 'none'; base-uri 'none'; connect-src 'self' https://api.anthropic.com https://api.finmindtrade.com https://raw.githubusercontent.com https://api.github.com https://taiwan-flow-v2.shihpc.workers.dev">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; object-src 'none'; base-uri 'none'; connect-src 'self' https://api.anthropic.com https://api.finmindtrade.com https://raw.githubusercontent.com https://api.github.com https://taiwan-flow-v2.twradar.workers.dev">
 <title>盤後分析 · 股市雷達</title>
 <style>
   :root{
@@ -245,7 +245,7 @@
 <body>
 <div class="wrap">
   <!-- 換址點：與 SITE.hub 同步（tests/test_sites_consistency.py 守門） -->
-  <div class="top"><a class="back" href="https://shihpc.github.io/">← 回 Hub</a></div>
+  <div class="top"><a class="back" href="https://cowowboy.github.io/">← 回 Hub</a></div>
   <header>
     <h1>📊 盤後分析</h1>
     <div class="sub" id="pageSub"></div>
@@ -294,9 +294,9 @@ const SUBS = {
 // 兩者都由 tests/test_sites_consistency.py 強制與 SITE 一致 —— CSP 沒跟著改時
 // 瀏覽器會「靜默」擋掉請求，頁面只是空白，是最難查的一種壞法。
 const SITE = {
-  rawOrg: "https://raw.githubusercontent.com/shihpc",
-  worker: "https://taiwan-flow-v2.shihpc.workers.dev",
-  hub:    "https://shihpc.github.io",
+  rawOrg: "https://raw.githubusercontent.com/cowowboy",
+  worker: "https://taiwan-flow-v2.twradar.workers.dev",
+  hub:    "https://cowowboy.github.io",
 };
 const RAW = (repo, path) => `${SITE.rawOrg}/${repo}/main/${path}`;
 

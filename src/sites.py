@@ -21,9 +21,9 @@ from __future__ import annotations
 
 import os
 
-RAW_ORG = os.environ.get("RAW_ORG", "https://raw.githubusercontent.com/shihpc")
-WORKER = os.environ.get("WORKER_BASE", "https://taiwan-flow-v2.shihpc.workers.dev")
-HUB = os.environ.get("HUB_BASE", "https://shihpc.github.io")
+RAW_ORG = os.environ.get("RAW_ORG", "https://raw.githubusercontent.com/cowowboy")
+WORKER = os.environ.get("WORKER_BASE", "https://taiwan-flow-v2.twradar.workers.dev")
+HUB = os.environ.get("HUB_BASE", "https://cowowboy.github.io")
 
 
 def raw_base(repo: str) -> str:
