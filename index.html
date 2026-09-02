@@ -257,8 +257,8 @@
 
   <footer>
     資料來源：FinMind（融資／借券／融券借券／當沖／鉅額）·
-    <a href="https://github.com/shihpc/taiwan-flow-live-v2">taiwan-flow-live-v2</a>（主動ETF）｜
-    <a href="https://github.com/shihpc/postmkt">postmkt</a>
+    <a href="https://github.com/cowowboy/taiwan-flow-live-v2">taiwan-flow-live-v2</a>（主動ETF）｜
+    <a href="https://github.com/cowowboy/postmkt">postmkt</a>
     <span id="siteVer" hidden></span>
   </footer>
 </div>
@@ -299,6 +299,10 @@ const SITE = {
   hub:    "https://cowowboy.github.io",
 };
 const RAW = (repo, path) => `${SITE.rawOrg}/${repo}/main/${path}`;
+// GitHub 帳號也從 rawOrg 衍生（api.github.com 用；footer 的靜態連結插不了值，
+// 由 tests/test_sites_consistency.py 守著）
+const OWNER = SITE.rawOrg.split("/").pop();
+const GHAPI = (repo, path) => `https://api.github.com/repos/${OWNER}/${repo}/${path}`;
 
 const V2_BASE = RAW("taiwan-flow-live-v2", "data/aetf");
 // 盤後法人動態站（taiwan-flows）的資料：三大法人買賣超排行＋外資台指期未平倉，平日21:00更新
@@ -1841,7 +1845,7 @@ const b64DecodeUtf8 = s => { const bin = atob(String(s || "").replace(/\s+/g, ""
 async function ghSaveAnalysis(fileName, entry){
   const token = ghToken();
   if (!token) return { ok: false, err: "未設定 GitHub token" };
-  const api = "https://api.github.com/repos/shihpc/postmkt/contents/data/analyses/" + fileName;
+  const api = GHAPI("postmkt", "contents/data/analyses/") + fileName;
   const headers = { "Authorization": "Bearer " + token, "Accept": "application/vnd.github+json" };
   const attempt = async () => {
     let sha = null, arr = [];
@@ -3387,7 +3391,7 @@ async function loadSiteVer(){
     let v = null;
     try{ v = JSON.parse(sessionStorage.getItem("pm_site_ver")); }catch(e){}
     if (!v || !v.sha){
-      const r = await fetch("https://api.github.com/repos/shihpc/postmkt/commits/main",
+      const r = await fetch(GHAPI("postmkt", "commits/main"),
                             { headers: { Accept: "application/vnd.github+json" } });
       if (!r.ok) return;
       const j = await r.json();

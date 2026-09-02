@@ -89,3 +89,21 @@ def test_no_hardcoded_addresses_left_in_javascript():
         if re.search(r'"https://(raw\.githubusercontent\.com|[a-z0-9-]+\.github\.io|[a-z0-9-]+\.workers\.dev)', t):
             offenders.append(f"  {i}: {t[:100]}")
     assert not offenders, "還有寫死的位址(應改用 SITE/RAW()):\n" + "\n".join(offenders)
+
+
+def test_github_links_and_api_calls_use_the_same_owner_as_site():
+    """2026-09-02 補:第一次換址漏掉整整一類——不是 raw 網址但一樣綁帳號的地方
+    (footer 的 github.com 連結、api.github.com 呼叫)。它們不會讓頁面壞掉,
+    只會安靜地連到原作者的 repo。"""
+    owner = SITE["rawOrg"].rstrip("/").split("/")[-1]
+    bad = []
+    for i, line in enumerate(HTML.splitlines(), 1):
+        t = line.strip()
+        if t.startswith(("//", "<!--")):
+            continue
+        for m in re.finditer(r"https://(?:api\.)?github\.com/(?:repos/)?([A-Za-z0-9_.-]+)", t):
+            if "${" in t:          # 已經插值的不算
+                continue
+            if m.group(1) != owner:
+                bad.append(f"  {i}: {t[:90]}")
+    assert not bad, f"github 位址的帳號與 SITE.rawOrg({owner})不一致:\n" + "\n".join(bad)
