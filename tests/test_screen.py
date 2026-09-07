@@ -151,7 +151,7 @@ def test_consecutive_cnyes_failures_abort(monkeypatch):
     monkeypatch.setattr(bs, "fetch_tv", lambda mf: [
         {"code": f"{1000 + i}", "name": str(i), "desc": None, "mkt": "twse", "px": 1.0,
          "tv": {"feps": 30.0, "tp": None, "rec": None}} for i in range(12)])
-    monkeypatch.setattr(bs, "load_diag_stocks", lambda: {})
+    monkeypatch.setattr(bs, "load_diag", lambda: ({}, None))
     monkeypatch.setattr(bs, "fetch_cnyes",
                         lambda code: ({"est": None, "tp": None, "rating": None, "ch_name": None}, True))
     with pytest.raises(bs.ScreenAbort):
@@ -163,7 +163,7 @@ def test_consecutive_cnyes_failures_abort(monkeypatch):
 def test_build_end_to_end(tmp_path, monkeypatch):
     monkeypatch.setattr(bs, "SLEEP_SEC", 0)
     monkeypatch.setattr(bs, "fetch_tv", lambda mf: bs.parse_tv(TV_RESP))
-    monkeypatch.setattr(bs, "load_diag_stocks", lambda: DIAG_STOCKS)
+    monkeypatch.setattr(bs, "load_diag", lambda: (DIAG_STOCKS, "2026-09-04"))
 
     def fake_fetch(code):
         if code == "2330":
@@ -198,3 +198,44 @@ def test_build_end_to_end(tmp_path, monkeypatch):
     assert bs.main(["--out", str(out)]) == 0
     j = json.loads(out.read_text(encoding="utf-8"))
     assert j["min_feps"] == 20 and j["n"] == 4
+
+
+# ---------- 資料日期語意（2026-09-07 修）----------
+# 由來：週六凌晨 01:51 產製的 screen.json 寫 date=2026-09-05，但內容其實是
+# 09-04(五) 收盤——比 postmkt.json / diag.json 的 09-04 還新，使用者因此以為
+# 「有些頁面停在 0904、有些沒有」。date 不能直接改成交易日，因為前端拿它的年份
+# 當 FY 欄位錨點（index.html scrYear()），而 build() 裡的 sort_key 也用產製日的
+# 年份——兩者必須同源。所以另開 trade_date 給顯示用。
+
+def _min_build(monkeypatch, diag_ret):
+    monkeypatch.setattr(bs, "SLEEP_SEC", 0)
+    monkeypatch.setattr(bs, "fetch_tv", lambda mf: [
+        {"code": "2330", "name": "TSMC", "desc": None, "mkt": "twse", "px": 1000.0,
+         "tv": {"feps": 50.0, "tp": None, "rec": None}}])
+    monkeypatch.setattr(bs, "load_diag", lambda: diag_ret)
+    monkeypatch.setattr(bs, "fetch_cnyes",
+                        lambda code: ({"est": None, "tp": None, "rating": None, "ch_name": None}, False))
+    return bs.build(20, None)
+
+
+def test_trade_date_comes_from_diag_not_today(monkeypatch):
+    """trade_date 必須是 diag 的交易日，不是產製日。"""
+    out = _min_build(monkeypatch, (DIAG_STOCKS, "2026-09-04"))
+    assert out["trade_date"] == "2026-09-04"
+    assert out["date"] == bs.taipei_today().isoformat()   # date 仍是產製日
+    assert out["date"] != out["trade_date"] or True       # 同日時相等是允許的
+
+
+def test_trade_date_none_when_diag_missing(monkeypatch):
+    """讀不到 diag 時 trade_date 留空，不拿產製日冒充交易日。"""
+    out = _min_build(monkeypatch, ({}, None))
+    assert out["trade_date"] is None
+    assert out["date"] == bs.taipei_today().isoformat()
+
+
+def test_date_year_anchors_sort_key(monkeypatch):
+    """date 的年份是 FY 錨點，必須與 build() 內部排序用的年份同源——
+    這是 date 不能改成交易日的理由，改壞了這條會擋下來。"""
+    out = _min_build(monkeypatch, (DIAG_STOCKS, "2019-01-02"))   # 交易日刻意給很舊的年份
+    assert out["date"][:4] == str(bs.taipei_today().year)
+    assert out["trade_date"][:4] == "2019"
