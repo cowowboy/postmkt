@@ -202,12 +202,14 @@ def fetch_cnyes(code: str) -> tuple[dict, bool]:
 
 # ---------- 3. diag 合併／排序 ----------
 
-def load_diag_stocks(path: Path = DIAG_PATH) -> dict:
+def load_diag(path: Path = DIAG_PATH) -> tuple[dict, str | None]:
+    """回傳 (stocks, 交易日)。交易日給輸出的 trade_date 用——見 build() 裡的說明。"""
     try:
-        return json.loads(path.read_text(encoding="utf-8")).get("stocks") or {}
+        d = json.loads(path.read_text(encoding="utf-8"))
+        return (d.get("stocks") or {}), d.get("date")
     except Exception as e:  # noqa: BLE001 — diag 缺檔只影響 diag 欄，不中止
-        print(f"  ! 讀不到 {path}（{e}），diag 欄位全留 null")
-        return {}
+        print(f"  ! 讀不到 {path}（{e}），diag 欄位全留 null、trade_date 留空")
+        return {}, None
 
 
 def diag_fields(stocks: dict, code: str) -> dict:
@@ -233,7 +235,7 @@ def build(min_feps: float, limit: int | None) -> dict:
         cands = cands[:limit]
     print(f"TradingView 初篩（feps>={min_feps}）：{len(cands)} 檔")
 
-    diag_stocks = load_diag_stocks()
+    diag_stocks, trade_date = load_diag()
     rows, fail_streak, n_fail = [], 0, 0
     for i, c in enumerate(cands):
         if i:
@@ -259,8 +261,17 @@ def build(min_feps: float, limit: int | None) -> dict:
     today = taipei_today()
     rows.sort(key=lambda r: sort_key(r, str(today.year + 1), str(today.year)), reverse=True)
     print(f"cnyes 完成：{len(rows)} 檔（全失敗 {n_fail} 檔）")
+    if not trade_date:
+        print("  ! 取不到交易日（diag.json 缺），前端會退回顯示產製日")
     return {
+        # date 是**產製日**,不是交易日。它的年份被前端當成 FY 欄位的錨點
+        #（index.html scrYear()）,而本檔上面的 sort_key 也用 today.year——
+        # 兩者必須同源,所以這欄不能改成交易日,否則跨年那幾天 FY 欄位會與排序錯開。
         "date": today.isoformat(),
+        # trade_date 才是資料實際對應的交易日(取自 diag.json),前端顯示用。
+        # 2026-09-07 修:先前只有 date,週六凌晨產製的檔會顯示「資料日期 09-05」,
+        # 但內容其實是 09-04(五)收盤——看起來比 postmkt.json/diag.json 還新。
+        "trade_date": trade_date,
         "generated_at": dt.datetime.now(TAIPEI).isoformat(timespec="seconds"),
         "min_feps": min_feps,
         "n": len(rows),

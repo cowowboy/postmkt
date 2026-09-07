@@ -2723,7 +2723,9 @@ document.addEventListener("click", e => {
 
 // ---------- 選股 tab：data/screen/screen.json（分析師預估篩選，懶載） ----------
 // est 的年度鍵是字串年份、各列起始年不一（真實資料含 2022-2025 等歷史年鍵）；
-// 「今年/明年」錨定日曆年：基準年 Y＝screen.json date 的年份（缺則退 generated_at），
+// 「今年/明年」錨定日曆年：基準年 Y＝screen.json date（**產製日**）的年份（缺則退 generated_at），
+// 刻意用產製日而非 trade_date——build_screen.py 的 sort_key 也用產製日的年份，
+// 兩者必須同源，否則跨年那幾天 FY 欄位會與排序口徑錯開。顯示用的資料日期才用 trade_date。
 // 今年欄＝est[Y]、明年欄＝est[Y+1]，該列缺該年度一律顯「—」（PER 同）。
 // 刻意不逐列滑動取最小/次小年度——那會讓同一欄混到不同年度的值，比較 PER 誤導。
 const scrNum = v => (typeof v === "number" && isFinite(v)) ? v : null;
@@ -2778,7 +2780,7 @@ function renderScreen(){
   rows.sort((a, b) => (scrFilterEps(b, y1) ?? -Infinity) - (scrFilterEps(a, y1) ?? -Infinity));
   const disc = `<div class="diag-disc">分析師預估資料源：FactSet（經鉅亨網）／TradingView。`
     + `預估值為券商共識、隨時修訂，屬 AI 彙整之市場預期而非買賣建議與保證。`
-    + `資料日期：${esc(d.date || "—")}</div>`;
+    + `資料日期：${esc(d.trade_date || d.date || "—")}</div>`;
   const pills = `<div class="subtabs">` + SCREEN_MINS.map(m =>
     `<div class="subtab ${state.screenMin === m ? "active" : ""}" data-scrmin="${m}">明年EPS ≥ ${m}</div>`).join("")
     + `<div class="stat" style="margin-left:auto">顯示 <b>${rows.length}</b> / 共 ${all.length} 檔</div></div>`;
